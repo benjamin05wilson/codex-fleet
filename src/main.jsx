@@ -85,6 +85,7 @@ import { ProjectStart } from "./features/onboarding.jsx";
 import { WorkspaceSidebar } from "./features/workspace.jsx";
 import { HomePage } from "./features/home.jsx";
 import { ProjectNavigation } from "./features/project-navigation.jsx";
+import { TerminalView } from "./features/terminal.jsx";
 function App() {
   const [state, setState] = useState(null);
   const [showExamples, setShowExamples] = useState(
@@ -145,18 +146,24 @@ function App() {
   }, [listOpen]);
   const [modal, setModal] = useState(null);
   const openingSession = useRef(false);
-  const openConversation = async (id = projectId) => {
+  const openConversation = async (id = projectId, kind) => {
     if (openingSession.current || !state) return;
     openingSession.current = true;
     try {
       const target = state.projects.find((p) => p.id === id);
       const run = await act(() =>
-        api("/sessions/quick", "POST", {
-          projectId: target?.kind === "scratch" ? null : id,
-          approved: true,
-          useTeam: false,
-          prompt: "",
-        }),
+        kind
+          ? api("/sessions/new", "POST", {
+              projectId: id,
+              kind,
+              approved: true,
+            })
+          : api("/sessions/quick", "POST", {
+              projectId: target?.kind === "scratch" ? null : id,
+              approved: true,
+              useTeam: false,
+              prompt: "",
+            }),
       );
       if (run) {
         setProjectId(run.projectId);
@@ -312,6 +319,7 @@ function App() {
       view !== "home" &&
       run &&
       !run.reviewOf &&
+      run.sessionKind !== "terminal" &&
       !run.teamInitial &&
       (!run.teamRole || run.teamRole === "developer")
     ) {
@@ -320,16 +328,12 @@ function App() {
     }
   }, [selected, state, view]);
   useEffect(() => {
-    if (
-      view !== "home" &&
-      runs.length &&
-      !runs.some((r) => r.id === selected)
-    ) {
-      const preferred =
-        listedRuns.find((r) => !r.reviewOf && r.status !== "draft") ||
-        listedRuns.find((r) => !r.reviewOf) ||
-        runs[0];
-      setSelected(preferred.id);
+    if (view !== "home" && !runs.some((r) => r.id === selected)) {
+      const chats = listedRuns.filter(
+        (r) => !r.reviewOf && r.sessionKind !== "terminal",
+      );
+      const preferred = chats.find((r) => r.status !== "draft") || chats[0];
+      setSelected(preferred?.id || null);
     }
   }, [projectId, state, selected, view]);
   const chooseProject = (id) => {
@@ -564,16 +568,28 @@ function App() {
                   {view === "sessions" && (
                     <section className="detail-column">
                       {selected && runs.some((r) => r.id === selected) ? (
-                        <RunDetail
-                          key={selected}
-                          runId={selected}
-                          project={project}
-                          state={state}
-                          act={act}
-                          busy={busy}
-                          goRun={goRun}
-                          onSettings={() => setModal("settings")}
-                        />
+                        state.runs.find((r) => r.id === selected)
+                          ?.sessionKind === "terminal" ? (
+                          <div className="standalone-terminal">
+                            <TerminalView
+                              standalone
+                              key={selected}
+                              run={state.runs.find((r) => r.id === selected)}
+                              act={act}
+                            />
+                          </div>
+                        ) : (
+                          <RunDetail
+                            key={selected}
+                            runId={selected}
+                            project={project}
+                            state={state}
+                            act={act}
+                            busy={busy}
+                            goRun={goRun}
+                            onSettings={() => setModal("settings")}
+                          />
+                        )
                       ) : (
                         <SessionLanding
                           runs={runs}

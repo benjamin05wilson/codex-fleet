@@ -113,7 +113,8 @@ export class Terminals {
       s.process.resize(input.cols, input.rows);
     } else if (action === "close") {
       s.closing = true;
-      s.process.kill();
+      if (s.exitCode !== undefined) this.sessions.delete(runId);
+      else s.process.kill();
     }
     return { ok: true };
   }

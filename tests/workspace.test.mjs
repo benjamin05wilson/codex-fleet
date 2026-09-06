@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir, symlink } from "node:fs/promises";
+import {
+  mkdtemp,
+  rm,
+  writeFile,
+  mkdir,
+  symlink,
+  readFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,10 +15,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createApp } from "../server/app.mjs";
 import {
   quickSession,
+  newWorkspaceSession,
   sessionFiles,
   updateSessionOptions,
 } from "../server/workspace.mjs";
-import { createWorktree } from "../server/git.mjs";
+import { createWorktree, git } from "../server/git.mjs";
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "fleet-workspace-test-"));
@@ -35,6 +43,134 @@ async function until(fn) {
   }
   throw new Error("Timed out waiting for fixture session");
 }
+test("sidebar actions prepare distinct workspaces without changing source edits or starting a model", async (t) => {
+  const { app, root } = await fixture(t);
+  const project = await app.addProject({
+    mode: "create",
+    parentPath: root,
+    folderName: "source",
+    gitApproved: true,
+  });
+  await writeFile(join(project.path, "user.txt"), "staged user work");
+  await git(project.path, ["add", "user.txt"]);
+  const before = await git(project.path, ["status", "--porcelain"]);
+  const head = await git(project.path, ["rev-parse", "HEAD"]);
+  const create = (kind) =>
+    newWorkspaceSession(app, { projectId: project.id, approved: true, kind });
+  await assert.rejects(
+    newWorkspaceSession(app, { projectId: project.id, kind: "main" }),
+    /Confirm/,
+  );
+  await assert.rejects(create("unknown"), /Choose/);
+  await assert.rejects(
+    newWorkspaceSession(app, {
+      projectId: "missing",
+      approved: true,
+      kind: "main",
+    }),
+    /not found/,
+  );
+  assert.equal(app.store.list("run").length, 0);
+  const worktree = await create("worktree"),
+    main = await create("main"),
+    terminal = await create("terminal");
+  assert.notEqual(worktree.worktree, project.path);
+  assert.match(worktree.branch, /^fleet\//);
+  assert.equal(
+    (await git(worktree.worktree, ["branch", "--show-current"])).trim(),
+    worktree.branch,
+  );
+  await assert.rejects(readFile(join(worktree.worktree, "user.txt")), {
+    code: "ENOENT",
+  });
+  assert.equal(main.worktree, project.path);
+  assert.equal(main.workspaceKind, "main");
+  assert.equal(terminal.worktree, project.path);
+  for (const run of [worktree, main, terminal]) {
+    assert.equal(run.attempt, 0);
+    assert.equal(run.waitingForTask, true);
+    assert.equal(run.sandbox, "read-only");
+    assert.ok(!run.threadId && !run.shellOpen);
+  }
+  assert.throws(() => app.engine.queue(terminal.id, "TEST_EDIT"), /terminal/);
+  await assert.rejects(app.engine.accept(main.id), /will not stage or commit/);
+  updateSessionOptions(app, main.id, {
+    approved: true,
+    sandbox: "workspace-write",
+  });
+  app.engine.queue(main.id, "TEST_EDIT");
+  await until(() => app.store.get("run", main.id).status === "review");
+  assert.equal(app.store.get("run", main.id).worktree, project.path);
+  assert.equal(
+    await readFile(join(project.path, "artifact.txt"), "utf8"),
+    "a deterministic test change\n",
+  );
+  assert.equal(
+    (await git(project.path, ["status", "--porcelain"])).replace(
+      "?? artifact.txt\n",
+      "",
+    ),
+    before,
+  );
+  assert.equal(await git(project.path, ["rev-parse", "HEAD"]), head);
+});
+
+test("new-session API enforces CSRF and terminals own the actual project folder exclusively", async (t) => {
+  const { app, root } = await fixture(t);
+  const project = await app.addProject({
+    mode: "create",
+    parentPath: root,
+    folderName: "source",
+    gitApproved: true,
+  });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}/api`;
+  const state = await fetch(base + "/state").then((r) => r.json());
+  const post = (path, input, token = state.csrf) =>
+    fetch(base + path, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-fleet-token": token,
+        "x-fleet-client": "sidebar-test",
+      },
+      body: JSON.stringify(input),
+    });
+  const input = { projectId: project.id, kind: "terminal", approved: true };
+  assert.equal((await post("/sessions/new", input, "bad")).status, 403);
+  assert.equal(app.store.list("run").length, 0);
+  const response = await post("/sessions/new", input);
+  assert.equal(response.status, 201);
+  const terminal = await response.json();
+  const main = await newWorkspaceSession(app, { ...input, kind: "main" });
+  const opened = await post(`/runs/${terminal.id}/terminal/open`, {});
+  assert.equal(opened.status, 200);
+  const { lease } = await opened.json();
+  assert.throws(() => app.engine.queue(main.id, "Explain"), /shell/);
+  await post(`/runs/${terminal.id}/terminal/input`, {
+    lease,
+    data: "pwd > shell-location.txt\n",
+  });
+  await until(() => app.engine.terminals.get(terminal.id).events.length);
+  let location;
+  for (let i = 0; i < 50; i++) {
+    location = await readFile(
+      join(project.path, "shell-location.txt"),
+      "utf8",
+    ).catch(() => "");
+    if (location.trim()) break;
+    await delay(50);
+  }
+  assert.equal(location.trim(), project.path);
+  assert.equal(
+    (await post(`/runs/${terminal.id}/terminal/close`, { lease: "wrong" }))
+      .status,
+    400,
+  );
+  await post(`/runs/${terminal.id}/terminal/close`, { lease });
+  await until(() => !app.store.get("run", terminal.id).shellOpen);
+  assert.equal(app.store.get("run", terminal.id).attempt, 0);
+});
 test("explicit idle settings apply to the next turn and can be remembered without starting it", async (t) => {
   const { app } = await fixture(t);
   const run = await quickSession(app, { approved: true });

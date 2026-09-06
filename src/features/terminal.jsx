@@ -1,12 +1,53 @@
 import React, { useEffect, useRef, useState } from "react";
 import { api, Button, Empty } from "../ui.jsx";
-import { Terminal as TerminalIcon } from "lucide-react";
+import { Terminal as TerminalIcon, X, Loader2 } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 
-export function TerminalView({ run, act }) {
+export function TerminalView({ run, act, standalone = false }) {
   const host = useRef(null);
   const [session, setSession] = useState(null);
   const [error, setError] = useState("");
+  const [opening, setOpening] = useState(false);
+  const openingRef = useRef(false);
+  const [closed, setClosed] = useState(false);
+  const main = run.workspaceKind === "main";
+  const open = async () => {
+    if (openingRef.current) return;
+    openingRef.current = true;
+    setOpening(true);
+    setError("");
+    setClosed(false);
+    try {
+      const r = await act(async () => {
+        try {
+          return await api(`/runs/${run.id}/terminal/open`, "POST", {});
+        } catch (e) {
+          setError(e.message);
+          throw e;
+        }
+      });
+      if (r) setSession(r);
+      else setError((current) => current || "Could not open the terminal.");
+    } finally {
+      openingRef.current = false;
+      setOpening(false);
+    }
+  };
+  useEffect(() => {
+    // The sidebar terminal selection is the explicit open action. Re-selecting
+    // an existing entry reattaches its owned shell; the server enforces leases.
+    if (standalone) open();
+  }, [standalone]);
+  const close = async () => {
+    const r = await act(() =>
+      api(`/runs/${run.id}/terminal/close`, "POST", { lease: session.lease }),
+    );
+    if (r) {
+      setSession(null);
+      setError("");
+      setClosed(true);
+    }
+  };
   useEffect(() => {
     if (!session || !host.current) return;
     let terminal,
@@ -30,7 +71,6 @@ export function TerminalView({ run, act }) {
       fit = new FitAddon();
       terminal.loadAddon(fit);
       terminal.open(host.current);
-      fit.fit();
       const send = (action, data) =>
         api(`/runs/${run.id}/terminal/${action}`, "POST", {
           ...data,
@@ -38,6 +78,8 @@ export function TerminalView({ run, act }) {
         }).catch((e) => setError(e.message));
       terminal.onData((data) => send("input", { data }));
       terminal.onResize(({ cols, rows }) => send("resize", { cols, rows }));
+      fit.fit();
+      terminal.focus();
       observer = new ResizeObserver(() => fit.fit());
       observer.observe(host.current);
       let cursor = 0;
@@ -61,8 +103,10 @@ export function TerminalView({ run, act }) {
         }
       };
       await load();
-      events = setInterval(load, 200);
-    })().catch((e) => setError(e.message));
+      if (!disposed) events = setInterval(load, 200);
+    })().catch((e) => {
+      if (!disposed) setError(e.message);
+    });
     return () => {
       disposed = true;
       clearInterval(events);
@@ -71,38 +115,58 @@ export function TerminalView({ run, act }) {
     };
   }, [session, run.id]);
   return (
-    <div className="terminal-surface">
-      <div className="terminal-mode">
-        <strong>Worktree shell</strong>
-        <small>Interactive local shell · exclusive write access</small>
-        {session && (
-          <Button
-            onClick={async () => {
-              const r = await act(() =>
-                api(`/runs/${run.id}/terminal/close`, "POST", {
-                  lease: session.lease,
-                }),
-              );
-              if (r) {
-                setSession(null);
-                setError("");
-              }
-            }}
-          >
-            Close shell
-          </Button>
-        )}
-      </div>
+    <div
+      className={`terminal-surface ${standalone ? "terminal-direct" : ""}`}
+      role="region"
+      aria-label="Terminal"
+    >
+      {!standalone && (
+        <div className="terminal-mode">
+          <strong>{main ? "Project shell" : "Worktree shell"}</strong>
+          <small>Interactive local shell · exclusive write access</small>
+          {session && <Button onClick={close}>Close shell</Button>}
+        </div>
+      )}
+      {standalone && session && (
+        <button
+          className="icon-button terminal-close"
+          aria-label="Close terminal"
+          title="Close terminal"
+          onClick={close}
+        >
+          <X size={15} />
+        </button>
+      )}
       {error && <div className="notice error">{error}</div>}
       {session ? (
         <div className="terminal-host" ref={host} />
+      ) : standalone ? (
+        <div className="terminal-direct-status">
+          {opening ? (
+            <Loader2 size={16} className="spin" aria-label="Opening terminal" />
+          ) : closed || error ? (
+            <Button onClick={open}>
+              {closed ? "Reopen terminal" : "Retry"}
+            </Button>
+          ) : null}
+        </div>
       ) : (
-        <Empty icon={TerminalIcon} title="Take the worktree controls">
+        <Empty
+          icon={TerminalIcon}
+          title={
+            main
+              ? "Open a terminal in this project"
+              : "Take the worktree controls"
+          }
+        >
           This is a real shell, not recorded command output. Opening it
           invalidates checks and prevents Codex from writing at the same time.
-          It runs as your local user.
+          It runs as your local user, outside the Codex sandbox.
+          {main &&
+            " Commands can change your original project files. Other applications are not locked by Fleet."}
           <Button
             disabled={
+              opening ||
               !run.worktree ||
               [
                 "running",
@@ -111,16 +175,16 @@ export function TerminalView({ run, act }) {
                 "validating",
                 "accepting",
                 "queued",
+                "accepted",
               ].includes(run.status)
             }
-            onClick={async () => {
-              const r = await act(() =>
-                api(`/runs/${run.id}/terminal/open`, "POST", {}),
-              );
-              if (r) setSession(r);
-            }}
+            onClick={open}
           >
-            Open worktree shell
+            {opening
+              ? "Opening…"
+              : main
+                ? "Open project shell"
+                : "Open worktree shell"}
           </Button>
         </Empty>
       )}

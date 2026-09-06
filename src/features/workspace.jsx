@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { GitBranch, MessageSquare, Plus, Terminal } from "lucide-react";
 import { Button, Dialog, Field, Status, api } from "../ui.jsx";
 import { useCodexMetadata } from "./codex-metadata.jsx";
 
@@ -44,7 +45,9 @@ export function SessionOptions({ run, act, onClose }) {
           <p className="muted-copy">
             {sandbox === "read-only"
               ? "Codex can inspect files without changing them."
-              : "Codex can edit its isolated working folder. Your source folder stays untouched."}{" "}
+              : run.workspaceKind === "main"
+                ? "Codex can edit your original project folder. Changes are not isolated."
+                : "Codex can edit its isolated working folder. Your source folder stays untouched."}{" "}
             No unattended permission escalation.
           </p>
           <Field
@@ -291,6 +294,106 @@ export function QuickSession({
   );
 }
 
+export function NewWorkspaceMenu({ project, onNew, busy, compact = false }) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({});
+  const root = useRef(null);
+  const trigger = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const rect = trigger.current.getBoundingClientRect();
+    setPosition({
+      left: Math.max(12, Math.min(rect.left, window.innerWidth - 292)),
+      top: Math.max(12, Math.min(rect.bottom + 6, window.innerHeight - 222)),
+    });
+    root.current?.querySelector(".new-workspace-options button")?.focus();
+    const close = (event) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        trigger.current?.focus();
+      } else if (
+        event.type === "pointerdown" &&
+        !root.current?.contains(event.target)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("keydown", close);
+    document.addEventListener("pointerdown", close);
+    return () => {
+      document.removeEventListener("keydown", close);
+      document.removeEventListener("pointerdown", close);
+    };
+  }, [open]);
+  return (
+    <div
+      className={`new-workspace-menu ${compact ? "compact" : ""}`}
+      ref={root}
+    >
+      <button
+        ref={trigger}
+        className={compact ? "icon-button" : "button"}
+        aria-label={
+          compact
+            ? `New item in ${project?.name || "workspace"}`
+            : "New workspace item"
+        }
+        aria-expanded={open}
+        disabled={busy || !project}
+        onClick={() => setOpen(!open)}
+      >
+        <Plus size={15} />
+        {!compact && "New"}
+      </button>
+      {open && (
+        <div
+          className="new-workspace-options"
+          style={position}
+          role="group"
+          aria-label={`Create in ${project.name}`}
+        >
+          <div className="new-workspace-context">{project.name}</div>
+          {[
+            [
+              "worktree",
+              GitBranch,
+              "New Git worktree",
+              "Isolated branch · starts from committed HEAD",
+            ],
+            [
+              "main",
+              MessageSquare,
+              "New main chat",
+              "Project folder · uses your chat defaults",
+            ],
+            [
+              "terminal",
+              Terminal,
+              "New terminal",
+              "Project folder · local shell",
+            ],
+          ].map(([kind, Icon, title, hint]) => (
+            <button
+              key={kind}
+              disabled={busy}
+              onClick={() => {
+                setOpen(false);
+                onNew(project.id, kind);
+              }}
+            >
+              <Icon size={16} />
+              <span>
+                <strong>{title}</strong>
+                <small>{hint}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function WorkspaceSidebar({
   state,
   allProjects = false,
@@ -329,9 +432,11 @@ export function WorkspaceSidebar({
       aria-label="Projects and sessions"
     >
       <div className="sidebar-actions">
-        <Button disabled={busy} onClick={() => onNew(projectId)}>
-          + New conversation
-        </Button>
+        <NewWorkspaceMenu
+          project={state.projects.find((p) => p.id === projectId)}
+          onNew={onNew}
+          busy={busy}
+        />
       </div>
       <input
         className="sidebar-search"
@@ -385,41 +490,53 @@ export function WorkspaceSidebar({
                 >
                   {group.name}
                 </button>
-                <button
-                  aria-label={`New conversation in ${group.name}`}
-                  disabled={busy}
-                  onClick={() =>
-                    onNew(group.id === "scratch" ? null : group.id)
-                  }
-                >
-                  +
-                </button>
+                <NewWorkspaceMenu
+                  compact
+                  project={state.projects.find(
+                    (p) => p.id === group.projects[0],
+                  )}
+                  onNew={onNew}
+                  busy={busy}
+                />
               </div>
               {(!collapsed[group.id] || query) &&
                 visible.map((run) => (
-                  <button
-                    key={run.id}
-                    className={`session-row ${selected === run.id ? "selected" : ""}`}
-                    aria-current={selected === run.id ? "page" : undefined}
-                    onClick={() => goRun(run.id)}
-                  >
-                    <Status status={run.status} short />
-                    <div className="session-row-label">
-                      <strong>{run.title}</strong>
-                      <span>
-                        {run.blockedReason ||
-                          (run.waitingForTask
-                            ? ""
-                            : run.status === "running"
-                              ? "Working"
-                              : run.status === "review"
-                                ? run.files?.length
-                                  ? `${run.files.length} ${run.files.length === 1 ? "file" : "files"} changed`
-                                  : ""
-                                : run.status)}
-                      </span>
-                    </div>
-                  </button>
+                  <div className="session-entry" key={run.id}>
+                    <button
+                      className={`session-row ${selected === run.id ? "selected" : ""}`}
+                      aria-current={selected === run.id ? "page" : undefined}
+                      onClick={() => goRun(run.id)}
+                    >
+                      {run.sessionKind === "terminal" ? (
+                        <Terminal size={14} />
+                      ) : run.sessionKind === "worktree" ? (
+                        <GitBranch size={14} />
+                      ) : run.sessionKind === "main" ? (
+                        <MessageSquare size={14} />
+                      ) : (
+                        <Status status={run.status} short />
+                      )}
+                      <div className="session-row-label">
+                        <strong>{run.title}</strong>
+                        <span>
+                          {run.sessionKind === "terminal"
+                            ? run.shellOpen
+                              ? "Shell open"
+                              : "Local shell"
+                            : run.blockedReason ||
+                              (run.waitingForTask
+                                ? ""
+                                : run.status === "running"
+                                  ? "Working"
+                                  : run.status === "review"
+                                    ? run.files?.length
+                                      ? `${run.files.length} ${run.files.length === 1 ? "file" : "files"} changed`
+                                      : ""
+                                    : run.status)}
+                        </span>
+                      </div>
+                    </button>
+                  </div>
                 ))}
               {!collapsed[group.id] && !runs.length && (
                 <button
