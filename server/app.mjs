@@ -27,6 +27,7 @@ import { Workflows, templates } from "./workflows.mjs";
 import { Teams, teamRoles, teamDefaults } from "./teams.mjs";
 import { searchWorkspace, previewFile } from "./search.mjs";
 import { onboardingSettings, saveOnboarding } from "./onboarding.mjs";
+import { Browsers } from "./browsers.mjs";
 
 const exec = promisify(execFile);
 async function body(req) {
@@ -49,6 +50,7 @@ export async function createApp({
   bin,
   concurrency = 3,
   transport = "app-server",
+  browserOptions,
 }) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const store = new Store(join(dataDir, "fleet.sqlite"));
@@ -62,6 +64,8 @@ export async function createApp({
   engine.terminals = terminals;
   const previews = new Previews(engine);
   engine.previews = previews;
+  const browsers = new Browsers(engine, browserOptions);
+  engine.browsers = browsers;
   const workflows = new Workflows(store, engine);
   const teams = new Teams(store, engine, brain);
   engine.teams = teams;
@@ -243,6 +247,15 @@ export async function createApp({
       );
       const path = url.pathname;
       if (path.startsWith("/api/")) {
+        if (path === "/api/browser-agent" && req.method === "POST") {
+          send(
+            await browsers.agent(
+              String(req.headers.authorization || "").replace(/^Bearer /, ""),
+              await body(req),
+            ),
+          );
+          return;
+        }
         if (req.method === "GET" && path === "/api/search") {
           send(
             await searchWorkspace(
@@ -274,7 +287,8 @@ export async function createApp({
         }
         if (
           !["GET", "HEAD"].includes(req.method) &&
-          req.headers["idempotency-key"]
+          req.headers["idempotency-key"] &&
+          !/^\/api\/projects\/[^/]+\/browser(?:\/|$)/.test(path)
         ) {
           const key = String(req.headers["idempotency-key"]);
           if (key.length > 128) throw new Error("Invalid request identity.");
@@ -330,6 +344,52 @@ export async function createApp({
             );
             return;
           }
+        }
+        const browserMatch = path.match(
+          /^\/api\/projects\/([^/]+)\/browser(?:\/(start|stop|control|take|grant|approve|frame|tabs))?$/,
+        );
+        if (browserMatch) {
+          if (req.headers["x-fleet-token"] !== csrf) {
+            send({ error: "Reload Fleet to access the project browser." }, 403);
+            return;
+          }
+          const [, projectId, action] = browserMatch;
+          const clientId = req.headers["x-fleet-client"];
+          if (
+            !clientId ||
+            typeof clientId !== "string" ||
+            clientId.length > 128
+          )
+            throw new Error("Browser client identity is required.");
+          if (req.method === "GET" && !action)
+            send(browsers.state(projectId, clientId));
+          else if (req.method === "GET" && action === "frame")
+            send(browsers.frame(projectId));
+          else if (req.method === "GET" && action === "tabs")
+            send(await browsers.tabs(projectId));
+          else if (req.method === "POST") {
+            const input = await body(req);
+            if (action === "start")
+              send(await browsers.start(projectId, input, clientId));
+            else if (action === "stop") send(await browsers.stop(projectId));
+            else if (action === "take")
+              send(browsers.take(projectId, clientId));
+            else if (action === "grant")
+              send(
+                browsers.grant(
+                  projectId,
+                  input.runId,
+                  clientId,
+                  input.approved,
+                ),
+              );
+            else if (action === "approve")
+              send(browsers.approve(projectId, input, clientId));
+            else if (action === "control")
+              send(await browsers.control(projectId, input, clientId));
+            else send({ error: "Unsupported browser action." }, 405);
+          } else send({ error: "Method not allowed." }, 405);
+          return;
         }
         if (req.method === "GET" && path === "/api/capabilities") {
           send({
@@ -410,6 +470,7 @@ export async function createApp({
             }));
           send({
             csrf,
+            browserAvailable: true,
             onboarding: onboardingSettings(store),
             projects: store.list("project"),
             runs,
@@ -851,6 +912,8 @@ export async function createApp({
       send({ error: redact(e.message) }, e.status || 400);
     }
   });
+  browsers.base = () =>
+    server.address() ? `http://127.0.0.1:${server.address().port}` : "";
   return {
     server,
     store,
@@ -858,6 +921,7 @@ export async function createApp({
     brain,
     teams,
     previews,
+    browsers,
     addProject,
     refreshInventories,
     close: async ({ preserveWorkers = false } = {}) => {
@@ -866,6 +930,7 @@ export async function createApp({
       workflows.close();
       await teams.close();
       await previews.close();
+      await browsers.close();
       terminals.close();
       for (const stream of streams) stream.end();
       engine.shutdown({ preserveWorkers });

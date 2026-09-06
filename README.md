@@ -185,6 +185,24 @@ No Line Command databases, work repositories or source branches are imported or 
 
 ## Verification
 
+### Project browser
+
+In a coding chat, choose **Tools → Browser**, enter a website or local preview URL, approve its allowed origins, and open it. Fleet uses pinned `agent-browser` 0.36.0 with a separate ephemeral Chrome session per project (Chrome must be installed). The panel streams the actual page and supports navigation, tabs, click/type/paste/scroll, desktop/mobile viewports, screenshots, console output, network requests and page-text evidence. Evidence goes to a chat **draft**, never an automatic model turn.
+
+**Let this chat browse → Share browser** attaches a scoped MCP tool on the next chat turn. Reads need no further approval; each agent interaction waits for an explicit approval in this panel. **Take control** revokes access and queued actions; a command already sent to the page may finish. Other Fleet windows are observers until they take control. Closing the browser discards its ephemeral browsing state, not project files or chats. No extra AI service or model API key is involved.
+
+Only approved HTTP(S) origins can load, including any CDN/API origins entered at startup. The proxy checks exact origins/ports and pins DNS results; private-network destinations and Fleet's known internal ports are blocked, except explicitly approved loopback preview origins. Browser access is separate from Codex's filesystem sandbox and is **not** an OS sandbox or protection against a fully privileged local process. No personal profiles, arbitrary JavaScript, file upload/download, saved credentials or browser-state export tools are exposed. Do not use sensitive accounts for untrusted tasks. Site authentication compatibility, broad public-site coverage, downloads, IME input, audio/video and prolonged browser recovery are not certified in this version.
+
+Browsers close after 30 minutes without commands or visible-panel polling, or on normal daemon shutdown. A restart requires reopening and resharing; a worker that survives the daemon loses its browser connection. The raw browser control port and capability are not sent to the renderer/model prompt. CLI session configuration and worker metadata remain local; explicitly inserting evidence into a chat records it in that chat.
+
+Individual tab closing is deliberately disabled: our 0.36.0 integration test reproduced a network-control failure that reset remaining tabs. Create/switch/reuse tabs, or close the whole browser with confirmation. This is related to an [upstream disappearing-target/network-control issue](https://github.com/vercel-labs/agent-browser/issues/1651), although our reproduction uses tab closure rather than initial launch.
+
+Public sites can recognise headless Chrome and present rate limits or verification challenges. Google returned a 429/challenge during manual testing; Fleet does not promise undetected automation or bypass verification. Cookie dialogs and sign-in may also call separate origins that need explicit approval. For example, Google's consent flow called `https://consent.google.com` while only `https://www.google.com` was approved, so that request was blocked even though pointer input reached Chrome.
+
+Run `node tests/live-browser.mjs --run` for an isolated real-Chrome input/tab/stream and HTTP/WebSocket network-policy test. It uses no model calls or external websites and closes only its own browser. Test artifacts are retained in a printed temporary directory.
+
+### Other checks
+
 ```sh
 npm run check
 npm run test:codex
