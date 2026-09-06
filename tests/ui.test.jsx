@@ -1876,6 +1876,153 @@ test("direct terminal opens once in StrictMode and failed opens require an expli
   expect(request).toHaveBeenCalledTimes(2);
 });
 
+test("sidebar deletion is confirmed, removes the selected chat and can be restored from Trash", async () => {
+  const user = userEvent.setup();
+  const project = {
+    id: "delete-project",
+    name: "Delete project",
+    path: "/delete-project",
+  };
+  const run = {
+    id: "delete-chat",
+    projectId: project.id,
+    title: "A saved chat",
+    waitingForTask: true,
+    status: "draft",
+    sandbox: "read-only",
+    scopes: [],
+    dependencies: [],
+    files: [],
+    usage: {},
+    createdAt: new Date().toISOString(),
+  };
+  let deleted = false;
+  const request = vi.fn(async (url, options) => {
+    if (options?.method === "DELETE") deleted = true;
+    if (url.endsWith("/restore")) deleted = false;
+    return {
+      ok: true,
+      json: async () =>
+        url === "/api/state"
+          ? {
+              ...emptyState,
+              projects: [project],
+              runs: deleted ? [] : [run],
+              deletedRuns: deleted
+                ? [{ ...run, deletedAt: new Date().toISOString() }]
+                : [],
+            }
+          : { ...run, events: [] },
+    };
+  });
+  vi.stubGlobal("fetch", request);
+  render(<App />);
+  await user.click(
+    await screen.findByRole("button", { name: /^Open Delete project/ }),
+  );
+  await screen.findByRole("heading", { name: "A saved chat" });
+  await user.click(
+    screen.getByRole("button", { name: "Delete chat: A saved chat" }),
+  );
+  let dialog = screen.getByRole("dialog", { name: "Delete chat?" });
+  expect(
+    within(dialog).getByText(
+      /Chat history, project files and Git worktrees are kept/,
+    ),
+  ).toBeTruthy();
+  expect(
+    request.mock.calls.some(([, options]) => options?.method === "DELETE"),
+  ).toBe(false);
+  await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await user.click(
+    screen.getByRole("button", { name: "Delete chat: A saved chat" }),
+  );
+  dialog = screen.getByRole("dialog", { name: "Delete chat?" });
+  await user.dblClick(
+    within(dialog).getByRole("button", { name: "Delete chat", exact: true }),
+  );
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(
+    request.mock.calls.filter(([, options]) => options?.method === "DELETE"),
+  ).toHaveLength(1);
+  expect(screen.queryByRole("heading", { name: "A saved chat" })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Delete chat: A saved chat" }),
+  ).toBeNull();
+  await user.click(screen.getByRole("button", { name: /^Trash/ }));
+  await user.click(
+    screen.getByRole("button", { name: "Restore: A saved chat" }),
+  );
+  expect(await screen.findByText("Trash is empty.")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Close dialog" }));
+  expect(
+    screen.getByRole("button", { name: "Delete chat: A saved chat" }),
+  ).toBeTruthy();
+  expect(
+    request.mock.calls.some(
+      ([url]) => url.endsWith("/start") || url.includes("/terminal/open"),
+    ),
+  ).toBe(false);
+});
+
+test("sidebar delete is separate from selection and disabled for running, shell and managed entries", async () => {
+  const user = userEvent.setup(),
+    goRun = vi.fn(),
+    onDelete = vi.fn();
+  render(
+    <WorkspaceSidebar
+      state={{
+        ...emptyState,
+        projects: [{ id: "one", name: "One" }],
+        runs: [
+          { id: "idle", projectId: "one", title: "Idle", status: "draft" },
+          {
+            id: "active",
+            projectId: "one",
+            title: "Active",
+            status: "running",
+          },
+          {
+            id: "shell",
+            projectId: "one",
+            title: "Shell",
+            sessionKind: "terminal",
+            shellOpen: true,
+            status: "draft",
+          },
+          {
+            id: "team",
+            projectId: "one",
+            title: "Team",
+            teamRole: "developer",
+            status: "review",
+          },
+        ],
+      }}
+      projectId="one"
+      goRun={goRun}
+      onDelete={onDelete}
+      onNew={() => {}}
+      chooseProject={() => {}}
+    />,
+  );
+  expect(
+    screen.getByRole("button", { name: "Delete chat: Active" }).disabled,
+  ).toBe(true);
+  expect(
+    screen.getByRole("button", { name: "Delete terminal: Shell" }).disabled,
+  ).toBe(true);
+  expect(
+    screen.getByRole("button", { name: "Delete chat: Team" }).disabled,
+  ).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Delete chat: Idle" }));
+  expect(onDelete).toHaveBeenCalledWith(
+    expect.objectContaining({ id: "idle" }),
+  );
+  expect(goRun).not.toHaveBeenCalled();
+});
+
 test("project sidebar only shows the selected project without reviewer duplicates or navigation on collapse", async () => {
   const user = userEvent.setup(),
     goRun = vi.fn(),

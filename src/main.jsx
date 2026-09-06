@@ -82,7 +82,11 @@ import {
 import { MD, Dialog } from "./ui.jsx";
 import { TeamStrip } from "./features/team.jsx";
 import { ProjectStart } from "./features/onboarding.jsx";
-import { WorkspaceSidebar } from "./features/workspace.jsx";
+import {
+  WorkspaceSidebar,
+  DeleteSessionDialog,
+  SessionTrash,
+} from "./features/workspace.jsx";
 import { HomePage } from "./features/home.jsx";
 import { ProjectNavigation } from "./features/project-navigation.jsx";
 import { TerminalView } from "./features/terminal.jsx";
@@ -145,6 +149,8 @@ function App() {
     localStorage.setItem("fleet.list", listOpen ? "open" : "closed");
   }, [listOpen]);
   const [modal, setModal] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const deletingSession = useRef(false);
   const openingSession = useRef(false);
   const openConversation = async (id = projectId, kind) => {
     if (openingSession.current || !state) return;
@@ -262,13 +268,13 @@ function App() {
       if (e.key === "Escape") setSearch("");
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") {
         e.preventDefault();
-        if (!modal && !e.repeat)
+        if (!modal && !deleteTarget && !e.repeat)
           openConversation(view === "home" ? null : projectId);
       }
     };
     document.addEventListener("keydown", listener);
     return () => document.removeEventListener("keydown", listener);
-  }, [state, projectId, modal, view]);
+  }, [state, projectId, modal, view, deleteTarget]);
   useEffect(() => {
     const closeMenus = (e) => {
       document
@@ -308,6 +314,38 @@ function App() {
   const listedRuns = runs.filter(
     (r) => !r.teamRole || r.teamRole === "developer",
   );
+  const deletedRuns = (state?.deletedRuns || []).filter(
+    (r) =>
+      (allProjects || r.projectId === projectId) &&
+      state.projects.some(
+        (p) => p.id === r.projectId && (!p.example || showExamples),
+      ),
+  );
+  const deleteConversation = async () => {
+    if (!deleteTarget || deletingSession.current) return;
+    deletingSession.current = true;
+    try {
+      const result = await act(
+        () => api(`/runs/${deleteTarget.id}`, "DELETE", { approved: true }),
+        "Moved to Trash. History and files kept; restore it from Trash.",
+      );
+      if (result) {
+        if (selected === deleteTarget.id) setSelected(null);
+        if (
+          localStorage.getItem(`fleet.selection.${deleteTarget.projectId}`) ===
+          deleteTarget.id
+        )
+          localStorage.removeItem(`fleet.selection.${deleteTarget.projectId}`);
+        if (lastConversation === deleteTarget.id) {
+          setLastConversation(null);
+          localStorage.removeItem("fleet.last-conversation");
+        }
+        setDeleteTarget(null);
+      }
+    } finally {
+      deletingSession.current = false;
+    }
+  };
   const missions =
     state?.missions.filter((m) => m.projectId === projectId) || [];
   const findings =
@@ -530,6 +568,9 @@ function App() {
                 goRun={goRun}
                 chooseProject={openProject}
                 onNew={openConversation}
+                onDelete={setDeleteTarget}
+                onTrash={() => setModal("trash")}
+                trashCount={deletedRuns.length}
                 busy={busy}
               />
             )}
@@ -742,6 +783,30 @@ function App() {
           </div>
         )}
       </div>
+      {deleteTarget && (
+        <DeleteSessionDialog
+          run={state.runs.find((r) => r.id === deleteTarget.id) || deleteTarget}
+          busy={busy}
+          onClose={() => {
+            if (!deletingSession.current) setDeleteTarget(null);
+          }}
+          onDelete={deleteConversation}
+        />
+      )}
+      {modal === "trash" && (
+        <SessionTrash
+          runs={deletedRuns}
+          projects={state.projects}
+          busy={busy}
+          onClose={() => setModal(null)}
+          onRestore={(id) =>
+            act(
+              () => api(`/runs/${id}/restore`, "POST", {}),
+              "Chat restored. No agent or shell was started.",
+            )
+          }
+        />
+      )}
       {toast && (
         <div role="status" className={"toast " + (toast.error ? "error" : "")}>
           {toast.error ? <AlertTriangle size={16} /> : <Check size={16} />}

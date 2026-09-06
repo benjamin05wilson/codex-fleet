@@ -4,6 +4,53 @@ import { id, now } from "./store.mjs";
 import { git, repository, safeRead, createWorktree } from "./git.mjs";
 import { searchablePath } from "./search.mjs";
 import { redact } from "./sentinel.mjs";
+import { deletionBlockedReason } from "../shared/session-lifecycle.mjs";
+
+export function deleteSession({ store, engine }, key, input) {
+  if (input.approved !== true) throw new Error("Confirm deleting this chat.");
+  const run = store.get("run", key);
+  if (run.reviewOf)
+    throw new Error("Delete the parent chat instead of its linked review.");
+  if (run.deletedAt) return { id: key, deletedAt: run.deletedAt };
+  const related = store
+    .list("run")
+    .filter((r) => r.id === key || r.reviewOf === key);
+  for (const item of related) {
+    const reason = deletionBlockedReason(item);
+    if (reason) throw new Error(reason);
+    engine.assertIdleWorktree(item, { allowTeamReaders: false });
+    if (engine.processes.has(item.id) || engine.validations.has(item.id))
+      throw new Error("Wait for this session to stop before deleting it.");
+  }
+  const deletedAt = now();
+  for (const item of related) {
+    store.patch("run", item.id, { deletedAt, deletionRootId: key });
+    engine.watchers.get(item.id)?.close();
+    engine.watchers.delete(item.id);
+    clearTimeout(engine.scanDebounce.get(item.id));
+    engine.scanDebounce.delete(item.id);
+  }
+  store.event(run.projectId, key, "session.deleted", { recoverable: true });
+  return { id: key, deletedAt };
+}
+
+export function restoreSession({ store, engine }, key) {
+  const run = store.get("run", key);
+  if (run.deletionRootId && run.deletionRootId !== key)
+    throw new Error("Restore the parent chat instead of its linked review.");
+  if (!run.deletedAt) return run;
+  for (const item of store
+    .list("run")
+    .filter((r) => r.deletionRootId === key)) {
+    const restored = store.patch("run", item.id, {
+      deletedAt: null,
+      deletionRootId: null,
+    });
+    if (restored.worktree) engine.watchWorktree(restored);
+  }
+  store.event(run.projectId, key, "session.restored");
+  return store.get("run", key);
+}
 
 export function sessionDefaults(input = {}) {
   const sandbox = input.sandbox || "read-only",

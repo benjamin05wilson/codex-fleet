@@ -16,6 +16,8 @@ import { Previews } from "./previews.mjs";
 import {
   quickSession,
   newWorkspaceSession,
+  deleteSession,
+  restoreSession,
   sessionFiles,
   updateSessionOptions,
 } from "./workspace.mjs";
@@ -310,6 +312,24 @@ export async function createApp({
             .run(key, fingerprint);
           requestKey = key;
         }
+        const sessionTarget = path.match(/^\/api\/runs\/([^/]+)(?:\/(.*))?$/);
+        if (sessionTarget) {
+          const target = store.get("run", sessionTarget[1]);
+          if (
+            target.deletedAt &&
+            sessionTarget[2] !== "restore" &&
+            req.method !== "DELETE"
+          ) {
+            send(
+              {
+                error:
+                  "This chat is in Trash. Restore it before opening or running it.",
+              },
+              410,
+            );
+            return;
+          }
+        }
         if (req.method === "GET" && path === "/api/capabilities") {
           send({
             apiVersion: 1,
@@ -374,20 +394,36 @@ export async function createApp({
           return;
         }
         if (req.method === "GET" && path === "/api/state") {
-          const runs = store.list("run").map(({ validation, ...r }) => ({
-            ...r,
-            validation: validation
-              ? { ...validation, diff: undefined, output: undefined }
-              : null,
-          }));
+          const allRuns = store.list("run");
+          const runs = allRuns
+            .filter((r) => !r.deletedAt)
+            .map(({ validation, ...r }) => ({
+              ...r,
+              validation: validation
+                ? { ...validation, diff: undefined, output: undefined }
+                : null,
+            }));
           send({
             csrf,
             projects: store.list("project"),
             runs,
+            deletedRuns: allRuns
+              .filter((r) => r.deletedAt && r.deletionRootId === r.id)
+              .map(({ id, title, projectId, sessionKind, deletedAt }) => ({
+                id,
+                title,
+                projectId,
+                sessionKind,
+                deletedAt,
+              })),
             missions: store.list("mission"),
             workflows: store.list("workflow"),
             workitems: store.list("workitem"),
-            findings: store.list("finding"),
+            findings: store
+              .list("finding")
+              .filter(
+                (f) => !allRuns.some((r) => r.id === f.runId && r.deletedAt),
+              ),
             status: await status(),
             limits: { concurrency: engine.concurrency, ...limits },
             workflowTemplates: templates,
@@ -673,12 +709,20 @@ export async function createApp({
           }
         }
         const runMatch = path.match(
-          /^\/api\/runs\/([^/]+)(?:\/(start|pause|cancel|diff|validate|accept|review|options))?$/,
+          /^\/api\/runs\/([^/]+)(?:\/(start|pause|cancel|diff|validate|accept|review|options|restore))?$/,
         );
         if (runMatch) {
           const key = runMatch[1];
           const run = store.get("run", key);
           const action = runMatch[2];
+          if (req.method === "DELETE" && !action) {
+            send(deleteSession({ store, engine }, key, await body(req)));
+            return;
+          }
+          if (req.method === "POST" && action === "restore") {
+            send(restoreSession({ store, engine }, key));
+            return;
+          }
           if (req.method === "POST" && action === "options") {
             send(updateSessionOptions({ store, engine }, key, await body(req)));
             return;

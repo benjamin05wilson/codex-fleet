@@ -31,6 +31,7 @@ export async function searchWorkspace(
     .filter(
       (r) =>
         allowed.has(r.projectId) &&
+        !r.deletedAt &&
         (r.title + " " + r.prompt).toLowerCase().includes(q),
     )
     .slice(0, 12))

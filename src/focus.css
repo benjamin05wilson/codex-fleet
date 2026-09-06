@@ -1303,6 +1303,84 @@
 .project-sidebar .session-row-label {
   gap: 4px;
 }
+.session-entry {
+  position: relative;
+}
+.focused-workspace .project-sidebar .session-entry .session-row {
+  padding-right: 35px;
+}
+.session-delete-action {
+  position: absolute;
+  right: 14px;
+  top: 10px;
+  opacity: 0;
+}
+.session-entry:hover .session-delete-action,
+.session-entry:focus-within .session-delete-action {
+  opacity: 1;
+}
+.session-delete-action .icon-button {
+  width: 24px;
+  height: 24px;
+}
+.session-delete-action .icon-button:hover:not(:disabled) {
+  color: #e9a39a;
+  background: #e9a39a10;
+}
+.sidebar-trash {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  text-align: left;
+}
+.sidebar-trash:hover {
+  color: var(--ink);
+}
+.sidebar-trash span {
+  margin-left: auto;
+}
+.delete-session-copy {
+  color: var(--muted);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.delete-session-copy strong {
+  color: var(--ink);
+}
+.session-trash-list {
+  max-height: 55vh;
+  overflow: auto;
+}
+.session-trash-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.session-trash-row > div {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.session-trash-row strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.session-trash-row small {
+  font-size: 11px;
+  color: var(--muted);
+}
+@media (hover: none) {
+  .session-delete-action {
+    opacity: 1;
+  }
+}
 .project-sidebar .session-row-label strong {
   overflow: hidden;
   text-overflow: ellipsis;
