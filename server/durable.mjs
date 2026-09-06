@@ -16,6 +16,7 @@ export async function launchWorker(engine, run, prompt) {
       run,
       prompt,
       timeoutMs: run.timeoutMs,
+      browser: engine.browsers?.connection(run, identity) || null,
     }),
     { mode: 0o600 },
   );

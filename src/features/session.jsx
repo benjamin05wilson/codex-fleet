@@ -136,6 +136,7 @@ function SessionLanding({ runs, onSelect, onCreate, project }) {
 import { Sentinel } from "./security.jsx";
 import { TerminalView } from "./terminal.jsx";
 import { Preview } from "./preview.jsx";
+import { ProjectBrowser } from "./browser.jsx";
 
 function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
   const [detail, setDetail] = useState(null);
@@ -147,7 +148,7 @@ function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
         "conversation",
         "review",
         ...(!selected?.teamRole || selected.teamRole === "developer"
-          ? ["files", "preview"]
+          ? ["files", "preview", "browser"]
           : []),
       ].includes(saved)
     )
@@ -343,6 +344,7 @@ function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
               <>
                 <button onClick={() => showTool("files")}>Files</button>
                 <button onClick={() => showTool("preview")}>Preview</button>
+                <button onClick={() => showTool("browser")}>Browser</button>
                 <button onClick={() => showTool("terminal")}>
                   Worktree shell
                 </button>
@@ -711,9 +713,11 @@ function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
                     ? "Files"
                     : tab === "preview"
                       ? "Preview"
-                      : tab === "terminal"
-                        ? "Worktree shell"
-                        : "Session details"}
+                      : tab === "browser"
+                        ? "Browser"
+                        : tab === "terminal"
+                          ? "Worktree shell"
+                          : "Session details"}
               </strong>
               <button
                 aria-label="Close session tool"
@@ -724,6 +728,17 @@ function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
             </header>
             <div className="tool-scroll">
               {tab === "files" && <SessionFiles run={run} />}
+              {tab === "browser" && (
+                <ProjectBrowser
+                  key={project.id}
+                  project={project}
+                  run={run}
+                  onEvidence={(text) => {
+                    setFollowup(text);
+                    setTab("conversation");
+                  }}
+                />
+              )}
               {tab === "preview" && (
                 <Preview
                   run={run}
