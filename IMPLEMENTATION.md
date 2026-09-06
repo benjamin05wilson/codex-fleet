@@ -2,6 +2,13 @@
 
 The approved redesign is implemented as the 0.2 local macOS build. This is an implementation checkpoint, not a claim that every future Fleet feature is complete.
 
+## Approved homepage — activated
+
+- Wide-screen refinement: removed the homepage's 1240px maximum width. Content now fills the available width with responsive outer gutters capped at 48px; the attention column grows from 280px to 380px. Existing tablet/mobile breakpoints remain. Preview rebuilt independently of the live app and checked at 700, 1440, 1920 and 2560px without horizontal overflow; temporary browser sizing reset after QA.
+- Approved homepage: inline New project/Open folder/Quick chat actions, one featured conversation with a real summary, compact project rows with paths/branches/chat counts/activity dates, up to four other recent threads, and a conditional attention list for unresolved findings, failures and completed coding work. No placeholder statistics; hidden examples, deleted chats, terminals and routine reviewer successes are excluded appropriately. All 73 server and 63 UI tests pass; production build succeeds.
+- Activated the production frontend through Fleet's View → Reload menu, without restarting its daemon. Desktop screenshot confirms the fluid homepage with the three visible non-demo projects; all four stored projects, 17 chats and the existing open terminal remain intact. The desktop package was rebuilt separately at `release/onboarding-update/mac-arm64/Fleet.app`; the running bundle was not overwritten. Backend/onboarding activation still awaits a safe daemon restart and was not required for this homepage update.
+- Visual-only review at `http://127.0.0.1:55889` uses an in-memory, redacted snapshot of the local workspace. The labelled existing-demo-history toggle demonstrates the populated layout without adding records; normal non-demo projects currently have mostly empty chats. Preview actions only display a notice, and the server rejects mutations. Build and preview harness live under ignored `build/home-review/`; the preview-only banner and demo toggle are not shipped in the app.
+
 ## Delivered
 
 - Brain file explorer: shared searchable, alphabetically sorted Markdown file list in both graph and Notes modes, selected-file highlighting, new-note action, vault count and hide/show control. Search is independent of graph filters; graph and file selections stay synchronized. Narrow-window overlay closes after successful selection; unsaved-edit protection still applies. All 51 UI tests pass, including independent file search, graph/file selection, collapse state, narrow selection and automatically added notes. Browser checked the 13-note fixture, note reader, search and collapse. No backend or user-vault content changes.
