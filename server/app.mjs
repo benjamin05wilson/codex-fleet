@@ -811,6 +811,8 @@ export async function createApp({
       terminals.close();
       for (const stream of streams) stream.end();
       engine.shutdown({ preserveWorkers });
+      // Drain security scans before SQLite closes.
+      await Promise.allSettled([...engine.scans]);
       await Promise.all(
         [...engine.validations.values()].map((v) => v.pending).filter(Boolean),
       );

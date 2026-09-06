@@ -80,6 +80,7 @@ export class Engine {
     this.validations = new Map();
     this.watchers = new Map();
     this.scanDebounce = new Map();
+    this.scans = new Set();
     this.busy = false;
     this.closing = false;
     for (const run of store.list("run"))
@@ -505,7 +506,16 @@ export class Engine {
       path: finding.path,
     });
   }
-  async scan(key) {
+  scan(key) {
+    const pending = this.scanWorktree(key);
+    this.scans.add(pending);
+    pending.then(
+      () => this.scans.delete(pending),
+      () => this.scans.delete(pending),
+    );
+    return pending;
+  }
+  async scanWorktree(key) {
     const run = this.store.get("run", key);
     const change = await changes(run);
     this.store.patch("run", key, { files: change.files });
