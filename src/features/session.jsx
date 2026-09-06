@@ -403,6 +403,12 @@ function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
         className={`session-panes ${tab !== "conversation" ? "with-tool" : ""}`}
       >
         <section className="conversation-pane" aria-label="Codex conversation">
+          {run.sandbox === "danger-full-access" && (
+            <div className="main-folder-context yolo-context">
+              YOLO · no sandbox or approval prompts · commands can affect files
+              outside this project
+            </div>
+          )}
           {run.workspaceKind === "main" && (
             <div className="main-folder-context">
               <span>
@@ -499,9 +505,11 @@ function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
                     <GitBranch size={17} />
                     <div>
                       <strong>
-                        {run.workspaceKind === "main"
-                          ? "Main working folder"
-                          : "Isolated worktree"}
+                        {run.sandbox === "danger-full-access"
+                          ? "YOLO runs outside the sandbox. This worktree does not restrict file or network access."
+                          : run.workspaceKind === "main"
+                            ? "Main working folder"
+                            : "Isolated worktree"}
                       </strong>
                       <p>
                         {run.workspaceKind === "main"
@@ -660,9 +668,11 @@ function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
                         : "Settings are locked while this session is busy or managed"
                     }
                   >
-                    {run.sandbox === "read-only"
-                      ? "Read only"
-                      : "Edits allowed"}{" "}
+                    {run.sandbox === "danger-full-access"
+                      ? "YOLO · full access"
+                      : run.sandbox === "read-only"
+                        ? "Read only"
+                        : "Edits allowed"}{" "}
                     <ChevronDown size={11} />
                   </button>
                   <span className="composer-hint">

@@ -90,6 +90,7 @@ import {
 import { HomePage } from "./features/home.jsx";
 import { ProjectNavigation } from "./features/project-navigation.jsx";
 import { TerminalView } from "./features/terminal.jsx";
+import { WelcomeSetup } from "./features/welcome-setup.jsx";
 function App() {
   const [state, setState] = useState(null);
   const [showExamples, setShowExamples] = useState(
@@ -149,6 +150,8 @@ function App() {
     localStorage.setItem("fleet.list", listOpen ? "open" : "closed");
   }, [listOpen]);
   const [modal, setModal] = useState(null);
+  const [setupDismissed, setSetupDismissed] = useState(false);
+  const savingSetup = useRef(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const deletingSession = useRef(false);
   const openingSession = useRef(false);
@@ -261,6 +264,11 @@ function App() {
   }, []);
   useEffect(() => {
     const listener = (e) => {
+      if (
+        (state?.onboarding === null && !setupDismissed) ||
+        modal === "onboarding"
+      )
+        return;
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         setModal("search");
@@ -274,7 +282,7 @@ function App() {
     };
     document.addEventListener("keydown", listener);
     return () => document.removeEventListener("keydown", listener);
-  }, [state, projectId, modal, view, deleteTarget]);
+  }, [state, projectId, modal, view, deleteTarget, setupDismissed]);
   useEffect(() => {
     const closeMenus = (e) => {
       document
@@ -408,6 +416,37 @@ function App() {
         </span>
         {offline && <Button onClick={refresh}>Retry</Button>}
       </div>
+    );
+  if ((state.onboarding === null && !setupDismissed) || modal === "onboarding")
+    return (
+      <>
+        <WelcomeSetup
+          saved={state.onboarding}
+          busy={busy}
+          onSkip={() => {
+            setSetupDismissed(true);
+            setModal(null);
+          }}
+          onSave={async (input) => {
+            if (savingSetup.current) return;
+            savingSetup.current = true;
+            try {
+              const result = await act(() => api("/onboarding", "POST", input));
+              if (result) {
+                setSetupDismissed(true);
+                setModal(null);
+              }
+            } finally {
+              savingSetup.current = false;
+            }
+          }}
+        />
+        {toast?.error && (
+          <div role="alert" className="toast error">
+            {toast.message}
+          </div>
+        )}
+      </>
     );
   return (
     <div className="app simple-app">
@@ -879,6 +918,7 @@ function App() {
       )}
       {modal === "settings" && (
         <SettingsDialog
+          onSetup={() => setModal("onboarding")}
           state={state}
           showExamples={showExamples}
           onShowExamples={(value) => {

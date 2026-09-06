@@ -85,7 +85,9 @@ function ProjectDialog({
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
   const [validation, setValidation] = useState("");
-  const [team, setTeam] = useState({ approved: false });
+  const [team, setTeam] = useState({
+    approved: false,
+  });
   const [inspection, setInspection] = useState(null),
     [inspecting, setInspecting] = useState(false),
     [error, setError] = useState(null);
@@ -747,6 +749,7 @@ function SettingsDialog({
   busy,
   showExamples,
   onShowExamples,
+  onSetup,
 }) {
   const codex = useCodexMetadata();
   const [name, setName] = useState(project?.name || "");
@@ -781,6 +784,7 @@ function SettingsDialog({
       <Button onClick={codex.reload} disabled={codex.loading}>
         Refresh Codex connection
       </Button>
+      {onSetup && <Button onClick={onSetup}>Setup & defaults…</Button>}
       {state.projects.some((p) => p.example) && (
         <label className="check-label">
           <input

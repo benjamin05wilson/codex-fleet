@@ -12,17 +12,30 @@ export type RunStatus =
   | "accepting"
   | "accepted"
   | "cancelled";
-export type Sandbox = "read-only" | "workspace-write";
+export type Sandbox = "read-only" | "workspace-write" | "danger-full-access";
 export interface SessionDefaults {
   sandbox: Sandbox;
   model: string;
   useTeam: boolean;
+  yoloApproved?: boolean;
 }
 export interface QuickSessionInput extends Partial<SessionDefaults> {
   projectId?: string | null;
   prompt?: string;
   approved: boolean;
   rememberDefaults?: boolean;
+}
+export interface OnboardingSettings {
+  id: "onboarding";
+  version: 1;
+  completedAt: string;
+  sandbox: Sandbox;
+  /** Legacy fields retained for existing installations; setup now saves permissions only. */
+  model?: string;
+  workspaceMode?: "worktree" | "main";
+  suggestTeam?: boolean;
+  includeMemory?: boolean;
+  yoloApproved: boolean;
 }
 export interface NewWorkspaceSessionInput {
   projectId: string;

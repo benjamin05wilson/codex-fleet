@@ -13,6 +13,7 @@ if (process.argv.includes("login")) {
 }
 let prompt = "";
 if (process.argv.includes("app-server")) {
+  let threadOptions;
   const send = (value) => console.log(JSON.stringify(value));
   const notify = (method, params) => send({ method, params });
   createInterface({ input: process.stdin }).on("line", async (line) => {
@@ -42,9 +43,10 @@ if (process.argv.includes("app-server")) {
               nextCursor: "page-2",
             },
       );
-    else if (["thread/start", "thread/resume"].includes(request.method))
+    else if (["thread/start", "thread/resume"].includes(request.method)) {
+      threadOptions = request.params;
       reply({ thread: { id: "fixture-thread", sessionId: "fixture-root" } });
-    else if (request.method === "turn/interrupt") {
+    } else if (request.method === "turn/interrupt") {
       reply({});
       notify("turn/completed", {
         turn: { id: "fixture-turn", status: "interrupted" },
@@ -61,6 +63,17 @@ if (process.argv.includes("app-server")) {
       reply({ turn: { id: "fixture-turn", status: "inProgress" } });
       notify("turn/started", { turn: { id: "fixture-turn" } });
       const prompt = request.params.input[0].text.split("\n\nConclude with")[0];
+      if (prompt.includes("TEST_POLICY"))
+        await writeFile(
+          "policy.json",
+          JSON.stringify({
+            thread: threadOptions,
+            turn: {
+              sandboxPolicy: request.params.sandboxPolicy,
+              approvalPolicy: request.params.approvalPolicy,
+            },
+          }),
+        );
       if (prompt.includes("TEST_HANG")) return;
       if (prompt.includes("TEST_DELAY"))
         await new Promise((r) => setTimeout(r, 1500));

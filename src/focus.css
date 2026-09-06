@@ -1198,6 +1198,10 @@
   color: var(--muted);
   font-size: 11px;
 }
+.yolo-context {
+  color: #e0b092;
+  background: #b9784510;
+}
 .main-folder-context code {
   overflow: hidden;
   text-overflow: ellipsis;

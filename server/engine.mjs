@@ -12,6 +12,7 @@ import {
   realpath,
 } from "node:fs/promises";
 import { id, now } from "./store.mjs";
+import { validatePermissions } from "../shared/permissions.mjs";
 import { limits } from "./limits.mjs";
 import { launchWorker, attachWorker, stopWorker } from "./durable.mjs";
 import { sandboxCheck } from "./codex-client.mjs";
@@ -42,6 +43,7 @@ export function scopesOverlap(a = [], b = []) {
   );
 }
 export function codexArgs(run) {
+  validatePermissions(run);
   const args = [
     "exec",
     "--json",
@@ -120,9 +122,12 @@ export class Engine {
       throw new Error("A title and task are required.");
     if (input.title.length > 160 || input.prompt.length > 30_000)
       throw new Error("Task is too long.");
-    const sandbox = input.sandbox || "read-only";
-    if (!["read-only", "workspace-write"].includes(sandbox))
-      throw new Error("Unsupported sandbox.");
+    const sandbox = validatePermissions(input);
+    if (
+      sandbox === "danger-full-access" &&
+      (input.workflowId || input.missionId)
+    )
+      throw new Error("YOLO is only available for independent chats.");
     const dependencies = input.dependencies || [];
     if (!Array.isArray(dependencies)) throw new Error("Invalid dependencies.");
     for (const key of dependencies) {
@@ -147,6 +152,7 @@ export class Engine {
       prompt: input.prompt.trim(),
       initialPrompt: input.prompt.trim(),
       sandbox,
+      ...(sandbox === "danger-full-access" ? { yoloApproved: true } : {}),
       model: String(input.model || "").trim(),
       scopes,
       dependencies,
@@ -240,8 +246,8 @@ export class Engine {
               other.id !== run.id &&
               other.projectId === run.projectId &&
               ACTIVE.includes(other.status) &&
-              other.sandbox === "workspace-write" &&
-              run.sandbox === "workspace-write" &&
+              other.sandbox !== "read-only" &&
+              run.sandbox !== "read-only" &&
               scopesOverlap(run.scopes, other.scopes),
           );
         if (conflict) {
@@ -977,6 +983,33 @@ export class Engine {
     }
   }
   assertIdleWorktree(run, { allowTeamReaders = true } = {}) {
+    validatePermissions(run);
+    if (
+      run.sandbox === "danger-full-access" &&
+      (this.terminals?.opening.size || this.previews?.opening.size)
+    )
+      throw new Error(
+        "Wait for the opening shell or preview, then close it before starting YOLO.",
+      );
+    if (
+      this.store
+        .list("run")
+        .some(
+          (other) =>
+            other.id !== run.id &&
+            !other.deletedAt &&
+            (run.sandbox === "danger-full-access" ||
+              other.sandbox === "danger-full-access") &&
+            ([...ACTIVE, "queued"].includes(other.status) ||
+              other.shellOpen ||
+              ["starting", "running", "stopping"].includes(
+                other.preview?.status,
+              )),
+        )
+    )
+      throw new Error(
+        "YOLO runs need exclusive access. Stop other Fleet agents, shells and previews first.",
+      );
     if (run.deletedAt)
       throw new Error("Restore this chat from Trash before using it.");
     if (this.previews?.has(run.worktree))
