@@ -780,7 +780,9 @@ test("Home is the startup view and Continue restores the last conversation witho
   expect(
     screen.queryByRole("region", { name: "Projects and sessions" }),
   ).toBeNull();
-  expect(screen.queryByRole("heading", { name: run.title })).toBeNull();
+  expect(
+    screen.queryByRole("heading", { name: run.title, level: 1 }),
+  ).toBeNull();
   await user.click(
     screen.getByRole("button", {
       name: /Continue working: My last conversation/,
@@ -1156,7 +1158,7 @@ test("Home recent work excludes empty drafts and team placeholders and ignores r
       .map((b) => b.getAttribute("aria-label")),
   ).toEqual(["Open Newer — project", "Open Older — project"]);
 });
-test("Home keeps recent conversations bounded and the remembered conversation first", async () => {
+test("Home features the remembered conversation and bounds other recent threads without duplication", async () => {
   const user = userEvent.setup(),
     resume = vi.fn();
   const runs = Array.from({ length: 5 }, (_, i) => ({
@@ -1176,12 +1178,145 @@ test("Home keeps recent conversations bounded and the remembered conversation fi
     screen.getByRole("region", { name: "Recent conversations" }),
   ).getAllByRole("button");
   expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
-    "Continue working: Task 0",
     "Continue working: Task 4",
     "Continue working: Task 3",
+    "Continue working: Task 2",
+    "Continue working: Task 1",
   ]);
-  await user.click(buttons[0]);
+  await user.click(
+    within(screen.getByRole("region", { name: "Continue working" })).getByRole(
+      "button",
+    ),
+  );
   expect(resume).toHaveBeenCalledWith("r0");
+});
+test("Home attention uses real unresolved findings and failed or completed tasks, never empty reviewer successes", async () => {
+  const go = vi.fn(),
+    user = userEvent.setup();
+  const runs = [
+    {
+      id: "coding",
+      projectId: "p",
+      title: "Implement notes",
+      status: "review",
+      summary: "Added note editing",
+      updatedAt: "2026-09-06",
+    },
+    {
+      id: "failed",
+      projectId: "p",
+      title: "Check routes",
+      teamRole: "verification",
+      status: "failed",
+    },
+    {
+      id: "security",
+      projectId: "p",
+      title: "Security report",
+      teamRole: "security",
+      status: "review",
+    },
+    {
+      id: "quiet",
+      projectId: "p",
+      title: "Passed reviewer",
+      teamRole: "verification",
+      status: "review",
+    },
+    {
+      id: "deleted",
+      projectId: "p",
+      title: "Deleted run",
+      status: "failed",
+      deletedAt: "2026-09-06",
+    },
+    {
+      id: "example",
+      projectId: "hidden",
+      title: "Hidden failure",
+      status: "failed",
+    },
+    {
+      id: "terminal",
+      projectId: "p",
+      title: "Terminal",
+      sessionKind: "terminal",
+      status: "draft",
+    },
+  ];
+  const state = {
+    ...emptyState,
+    projects: [
+      { id: "p", name: "Notes", path: "/notes" },
+      { id: "hidden", name: "Hidden", example: true },
+    ],
+    runs,
+    findings: [
+      { id: "f1", runId: "security", state: "suspected" },
+      { id: "f2", runId: "security", state: "resolved" },
+      { id: "f3", runId: "missing", state: "suspected" },
+    ],
+  };
+  render(<HomePage state={state} onContinue={go} />);
+  const attention = screen.getByRole("complementary", {
+    name: "Needs your attention",
+  });
+  expect(
+    within(attention)
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label")),
+  ).toEqual([
+    "1 security finding: Security report",
+    "Run failed: Check routes",
+    "Ready to review: Implement notes",
+  ]);
+  await user.click(
+    within(attention).getByRole("button", { name: /1 security finding/ }),
+  );
+  expect(go).toHaveBeenCalledExactlyOnceWith("security");
+  expect(screen.queryByText("Passed reviewer")).toBeNull();
+  expect(screen.queryByText("Deleted run")).toBeNull();
+  expect(screen.queryByText("Hidden failure")).toBeNull();
+  expect(screen.getByText("Added note editing")).toBeTruthy();
+  expect(
+    within(screen.getByRole("region", { name: "Your projects" })).getByText(
+      "1 chat",
+    ),
+  ).toBeTruthy();
+});
+test("Home omits an empty attention panel and terminal entries without pretending work is ready", () => {
+  render(
+    <HomePage
+      state={{
+        ...emptyState,
+        projects: [{ id: "p", name: "Project" }],
+        runs: [
+          {
+            id: "t",
+            projectId: "p",
+            title: "Terminal",
+            sessionKind: "terminal",
+            status: "draft",
+          },
+          {
+            id: "r",
+            projectId: "p",
+            title: "Reviewer",
+            teamRole: "security",
+            status: "review",
+          },
+        ],
+      }}
+    />,
+  );
+  expect(
+    screen.queryByRole("complementary", { name: "Needs your attention" }),
+  ).toBeNull();
+  expect(screen.queryByRole("region", { name: "Continue working" })).toBeNull();
+  expect(
+    screen.queryByRole("region", { name: "Recent conversations" }),
+  ).toBeNull();
+  expect(screen.getByText("0 chats")).toBeTruthy();
 });
 test("Home has useful empty and no-match states and respects busy start actions", async () => {
   const user = userEvent.setup(),
