@@ -1,0 +1,55 @@
+{
+  "name": "fleet-local",
+  "version": "0.2.0",
+  "main": "desktop/main.mjs",
+  "bin": {
+    "fleet": "cmd/fleet.mjs"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "node server/index.mjs",
+    "build": "vite build",
+    "start": "node server/index.mjs",
+    "postinstall": "node scripts/native-setup.mjs",
+    "desktop": "npm run build && electron .",
+    "desktop:package": "npm run build && npm run desktop:icon && electron-builder --mac --dir",
+    "desktop:icon": "swift scripts/icon.swift build/fleet.iconset && iconutil -c icns build/fleet.iconset -o build/fleet.icns",
+    "fleet": "node cmd/fleet.mjs",
+    "test": "npm run test:server && npm run test:ui",
+    "test:server": "node --test tests/*.test.mjs",
+    "test:ui": "vitest run",
+    "test:codex": "node tests/live-codex.mjs",
+    "demo:verify": "node scripts/verify-demo.mjs",
+    "check": "npm test && npm run build",
+    "format": "prettier --write --ignore-unknown src server tests *.js *.json *.html public/*.css public/*.svg"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "lucide-react": "^0.468.0",
+    "node-pty": "^1.1.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3",
+    "jsdom": "^30.0.1",
+    "prettier": "^3.9.6",
+    "typescript": "^7.0.2",
+    "vite": "^7.1.0",
+    "vitest": "^5.0.0"
+  },
+  "allowScripts": {
+    "electron@44.2.0": true,
+    "node-pty@1.1.0": true
+  }
+}

@@ -1,0 +1,15 @@
+/* System typography keeps Fleet fast, private, and available offline. */
+@font-face {
+  font-family: "Fleet Sans";
+  src: local("Arial");
+  font-weight: 100 599;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Fleet Sans";
+  src: local("Arial Bold"), local("Arial-BoldMT");
+  font-weight: 600 900;
+  font-style: normal;
+  font-display: swap;
+}

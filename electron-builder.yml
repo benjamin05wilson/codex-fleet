@@ -1,0 +1,25 @@
+appId: dev.fleet.local
+productName: Fleet
+asar: true
+npmRebuild: false
+files:
+  - desktop/**
+  - package.json
+extraResources:
+  - from: .
+    to: runtime
+    filter:
+      - server/**
+      - shared/**
+      - cmd/**
+      - dist/**
+      - node_modules/node-pty/**
+      - node_modules/node-addon-api/**
+mac:
+  icon: build/fleet.icns
+  category: public.app-category.developer-tools
+  target:
+    - target: dir
+      arch: arm64
+directories:
+  output: release
