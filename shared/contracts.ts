@@ -24,6 +24,11 @@ export interface QuickSessionInput extends Partial<SessionDefaults> {
   approved: boolean;
   rememberDefaults?: boolean;
 }
+export interface NewWorkspaceSessionInput {
+  projectId: string;
+  kind: "main" | "worktree" | "terminal";
+  approved: boolean;
+}
 export interface PlanTask {
   title: string;
   prompt: string;

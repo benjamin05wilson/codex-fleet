@@ -297,6 +297,11 @@ function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
       )}
       <div className="run-head">
         <h2>{run.title}</h2>
+        {run.sessionKind && (
+          <span className="workspace-kind" title={run.worktree}>
+            {run.workspaceKind === "main" ? "Main folder" : run.branch}
+          </span>
+        )}
         {!["draft", "review", "accepted"].includes(run.status) && (
           <Status status={run.status} />
         )}
@@ -398,6 +403,17 @@ function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
         className={`session-panes ${tab !== "conversation" ? "with-tool" : ""}`}
       >
         <section className="conversation-pane" aria-label="Codex conversation">
+          {run.workspaceKind === "main" && (
+            <div className="main-folder-context">
+              <span>
+                Main working folder ·{" "}
+                {run.sandbox === "read-only"
+                  ? "read-only"
+                  : "edits affect your original files"}
+              </span>
+              <code title={run.worktree}>{run.worktree}</code>
+            </div>
+          )}
           <div className="detail-scroll">
             {run.error && (
               <div className="notice error">
@@ -482,16 +498,24 @@ function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
                   <div className="start-note">
                     <GitBranch size={17} />
                     <div>
-                      <strong>Isolated worktree</strong>
+                      <strong>
+                        {run.workspaceKind === "main"
+                          ? "Main working folder"
+                          : "Isolated worktree"}
+                      </strong>
                       <p>
-                        Starting creates a worktree from the latest committed
-                        revision. Your current uncommitted changes stay in the
-                        source repository.
+                        {run.workspaceKind === "main"
+                          ? "This chat uses your original project folder, including uncommitted files. It does not create a branch or isolate changes."
+                          : run.worktree
+                            ? "This worktree is ready on its own branch. Uncommitted source changes were not copied."
+                            : "Starting creates a worktree from the latest committed revision. Your current uncommitted changes stay in the source repository."}
                       </p>
                       <span>
-                        {run.sandbox === "read-only"
-                          ? "Codex can explore this worktree, but cannot edit source files."
-                          : "Codex can edit this worktree. Network access is disabled in its sandbox."}
+                        {run.workspaceKind === "main"
+                          ? "Original files are shared with your other tools; Fleet does not isolate this chat."
+                          : run.sandbox === "read-only"
+                            ? "Codex can explore this worktree, but cannot edit source files."
+                            : "Codex can edit this worktree. Network access is disabled in its sandbox."}
                       </span>
                     </div>
                   </div>
@@ -837,6 +861,7 @@ function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
                     goRun={goRun}
                   />
                   {run.status === "review" &&
+                    run.workspaceKind !== "main" &&
                     !run.reviewOf &&
                     !run.teamInitial && (
                       <div className="run-controls">

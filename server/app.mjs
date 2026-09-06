@@ -15,6 +15,7 @@ import { reviewImport, importProject } from "./imports.mjs";
 import { Previews } from "./previews.mjs";
 import {
   quickSession,
+  newWorkspaceSession,
   sessionFiles,
   updateSessionOptions,
 } from "./workspace.mjs";
@@ -469,6 +470,13 @@ export async function createApp({
           send(await addProject(await body(req)), 201);
           return;
         }
+        if (req.method === "POST" && path === "/api/sessions/new") {
+          send(
+            await newWorkspaceSession({ store, engine }, await body(req)),
+            201,
+          );
+          return;
+        }
         if (req.method === "POST" && path === "/api/sessions/quick") {
           send(
             await quickSession(
@@ -811,7 +819,8 @@ export async function createApp({
       terminals.close();
       for (const stream of streams) stream.end();
       engine.shutdown({ preserveWorkers });
-      // Drain security scans before SQLite closes.
+      // File edits can leave an in-flight security scan after its watcher stops.
+      // Drain it while SQLite is still available.
       await Promise.allSettled([...engine.scans]);
       await Promise.all(
         [...engine.validations.values()].map((v) => v.pending).filter(Boolean),

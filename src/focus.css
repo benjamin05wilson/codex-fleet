@@ -1122,6 +1122,124 @@
   gap: 8px;
   padding: 16px 14px 10px;
 }
+.new-workspace-menu {
+  position: relative;
+}
+.sidebar-actions > .new-workspace-menu {
+  width: 100%;
+}
+.sidebar-actions .new-workspace-menu > button {
+  width: 100%;
+}
+.new-workspace-options {
+  position: fixed;
+  z-index: 80;
+  width: min(280px, calc(100vw - 24px));
+  padding: 6px;
+  border: 1px solid #3b3b3e;
+  border-radius: 9px;
+  background: #252527;
+  box-shadow: 0 12px 35px #0006;
+}
+.new-workspace-context {
+  padding: 6px 8px 8px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.new-workspace-options button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 8px;
+  color: var(--ink);
+  text-align: left;
+  border-radius: 5px;
+}
+.new-workspace-options button:hover,
+.new-workspace-options button:focus-visible {
+  background: #ffffff0c;
+}
+.new-workspace-options button span {
+  display: grid;
+  gap: 4px;
+}
+.new-workspace-options strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.new-workspace-options small {
+  font-size: 10px;
+  color: var(--muted);
+}
+.project-group-heading .new-workspace-options button {
+  padding: 10px 8px;
+  color: var(--ink);
+}
+.project-group-heading .new-workspace-menu > button {
+  width: 24px;
+  height: 24px;
+  padding: 4px;
+}
+.workspace-kind {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.main-folder-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 16px;
+  padding: 9px 20px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
+.main-folder-context code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.standalone-terminal {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: #111215;
+}
+.terminal-direct {
+  position: relative;
+}
+.terminal-direct .terminal-host {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+  padding: 16px 36px 16px 16px;
+}
+.terminal-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  opacity: 0.4;
+}
+.terminal-close:hover,
+.terminal-close:focus-visible {
+  opacity: 1;
+}
+.terminal-direct-status {
+  display: grid;
+  place-items: center;
+  flex: 1;
+  color: var(--muted);
+}
+.standalone-terminal .terminal-surface {
+  flex: 1;
+  min-height: 0;
+}
 .sidebar-actions .button {
   flex: 1;
   justify-content: flex-start;

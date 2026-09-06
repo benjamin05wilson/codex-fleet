@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { id, now } from "./store.mjs";
-import { git, repository, safeRead } from "./git.mjs";
+import { git, repository, safeRead, createWorktree } from "./git.mjs";
 import { searchablePath } from "./search.mjs";
 import { redact } from "./sentinel.mjs";
 
@@ -90,6 +90,45 @@ export async function quickSession(app, input) {
   }
   return run;
 }
+// Explicit sidebar actions prepare a workspace, never start an agent or shell.
+export async function newWorkspaceSession(app, input) {
+  if (input.approved !== true) throw new Error("Confirm the workspace action.");
+  if (!["main", "worktree", "terminal"].includes(input.kind))
+    throw new Error("Choose a main chat, Git worktree or terminal.");
+  if (!input.projectId) throw new Error("Select a project first.");
+  const project = app.store.get("project", input.projectId);
+  const repo = await repository(project.path);
+  const defaults =
+    input.kind === "terminal"
+      ? { sandbox: "read-only" }
+      : sessionDefaults(project.sessionDefaults || {});
+  const run = app.engine.create(project.id, {
+    title:
+      input.kind === "terminal"
+        ? "Terminal"
+        : input.kind === "main"
+          ? "Main chat"
+          : "New worktree",
+    prompt: "Awaiting your first instruction.",
+    ...defaults,
+  });
+  try {
+    const workspace =
+      input.kind === "worktree"
+        ? await createWorktree(project, run, app.engine.dataDir)
+        : { worktree: repo.path, base: repo.head, branch: repo.branch };
+    return app.store.patch("run", run.id, {
+      ...workspace,
+      sessionKind: input.kind,
+      workspaceKind: input.kind === "worktree" ? "worktree" : "main",
+      waitingForTask: true,
+    });
+  } catch (error) {
+    app.store.patch("run", run.id, { status: "failed", error: error.message });
+    throw error;
+  }
+}
+
 export async function sessionFiles(run, path) {
   if (!run.worktree) return { files: [], pending: true };
   const files = [
@@ -140,6 +179,8 @@ export function updateSessionOptions({ store, engine }, key, input) {
   if (input.approved !== true)
     throw new Error("Confirm the session settings before applying them.");
   const run = store.get("run", key);
+  if (run.sessionKind === "terminal")
+    throw new Error("Terminal sessions do not have Codex settings.");
   if (
     run.shellOpen ||
     ["starting", "running", "stopping"].includes(run.preview?.status)

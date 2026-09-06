@@ -13,6 +13,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { App, MD, RunDialog, MissionDialog, Sentinel } from "../src/main.jsx";
 import { RunDetail } from "../src/features/session.jsx";
+import { TerminalView } from "../src/features/terminal.jsx";
 import { WorkflowPlanner } from "../src/features/workflow-planner.jsx";
 import { ProjectDialog } from "../src/features/dialogs.jsx";
 import { TeamSettings, TeamReviews, TeamBadge } from "../src/features/team.jsx";
@@ -40,9 +41,26 @@ import {
   QuickSession,
   WorkspaceSidebar,
   SessionOptions,
+  NewWorkspaceMenu,
 } from "../src/features/workspace.jsx";
 
 // Component interaction tests; these do not claim to replace visual browser QA.
+vi.mock("@xterm/xterm", () => ({
+  Terminal: class {
+    loadAddon() {}
+    open() {}
+    onData() {}
+    onResize() {}
+    focus() {}
+    write() {}
+    dispose() {}
+  },
+}));
+vi.mock("@xterm/addon-fit", () => ({
+  FitAddon: class {
+    fit() {}
+  },
+}));
 beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
@@ -1417,7 +1435,7 @@ test("an explicit session deep link bypasses Home without queueing the session",
     history.replaceState(null, "", "/");
   }
 });
-test("one click opens an idle conversation without a setup dialog or duplicate request", async () => {
+test("sidebar main chat opens idle after choosing its kind, without duplicate requests", async () => {
   const user = userEvent.setup();
   const project = {
     id: "direct",
@@ -1441,7 +1459,7 @@ test("one click opens an idle conversation without a setup dialog or duplicate r
   let runs = [],
     finishOpening;
   const request = vi.fn(async (url) => {
-    if (url === "/api/sessions/quick") {
+    if (url === "/api/sessions/new") {
       await new Promise((resolve) => {
         finishOpening = resolve;
       });
@@ -1462,11 +1480,15 @@ test("one click opens an idle conversation without a setup dialog or duplicate r
     await screen.findByRole("button", { name: /^Open Direct project/ }),
   );
   const plus = await screen.findByRole("button", {
-    name: "New conversation in Direct project",
+    name: "New item in Direct project",
   });
-  await user.dblClick(plus);
+  await user.click(plus);
+  expect(request.mock.calls.some(([url]) => url === "/api/sessions/new")).toBe(
+    false,
+  );
+  await user.dblClick(screen.getByRole("button", { name: /^New main chat/ }));
   expect(
-    request.mock.calls.filter(([url]) => url === "/api/sessions/quick"),
+    request.mock.calls.filter(([url]) => url === "/api/sessions/new"),
   ).toHaveLength(1);
   finishOpening();
   await screen.findByRole("heading", { name: "What are we working on?" });
@@ -1481,12 +1503,12 @@ test("one click opens an idle conversation without a setup dialog or duplicate r
     false,
   );
   const body = JSON.parse(
-    request.mock.calls.find(([url]) => url === "/api/sessions/quick")[1].body,
+    request.mock.calls.find(([url]) => url === "/api/sessions/new")[1].body,
   );
   expect(body).toMatchObject({
     projectId: project.id,
-    prompt: "",
-    useTeam: false,
+    kind: "main",
+    approved: true,
   });
   await user.click(container.querySelector(".project-menu > summary"));
   await user.click(
@@ -1697,6 +1719,163 @@ test("quick session loads project defaults, retains unsent instructions and expl
   });
   expect(localStorage.getItem("fleet.quick.one")).toBeNull();
 });
+test("new workspace menu offers all three actions, dismisses and keeps the group project", async () => {
+  const user = userEvent.setup(),
+    onNew = vi.fn();
+  const view = render(
+    <NewWorkspaceMenu
+      compact
+      project={{ id: "two", name: "Two" }}
+      onNew={onNew}
+    />,
+  );
+  const plus = screen.getByRole("button", { name: "New item in Two" });
+  await user.click(plus);
+  expect(screen.getByRole("button", { name: /^New Git worktree/ })).toBe(
+    document.activeElement,
+  );
+  expect(screen.getAllByRole("button")).toHaveLength(4);
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("group")).toBeNull();
+  expect(document.activeElement).toBe(plus);
+  for (const [label, kind] of [
+    ["New Git worktree", "worktree"],
+    ["New main chat", "main"],
+    ["New terminal", "terminal"],
+  ]) {
+    await user.click(plus);
+    await user.click(
+      screen.getByRole("button", { name: new RegExp(`^${label}`) }),
+    );
+    expect(onNew).toHaveBeenLastCalledWith("two", kind);
+    expect(screen.queryByRole("group")).toBeNull();
+  }
+  await user.click(plus);
+  await user.click(document.body);
+  expect(screen.queryByRole("group")).toBeNull();
+  expect(onNew).toHaveBeenCalledTimes(3);
+  view.rerender(
+    <NewWorkspaceMenu
+      compact
+      project={{ id: "two", name: "Two" }}
+      busy
+      onNew={onNew}
+    />,
+  );
+  expect(plus.disabled).toBe(true);
+});
+
+test("sidebar terminal selection immediately opens only a shell, without intro text or Codex", async () => {
+  const user = userEvent.setup();
+  const project = {
+    id: "shell-project",
+    name: "Shell project",
+    path: "/shell-project",
+  };
+  const run = {
+    id: "shell-run",
+    projectId: project.id,
+    title: "Terminal",
+    sessionKind: "terminal",
+    workspaceKind: "main",
+    worktree: project.path,
+    status: "draft",
+    waitingForTask: true,
+    files: [],
+  };
+  let runs = [];
+  const request = vi.fn(async (url) => {
+    if (url === "/api/sessions/new") runs = [run];
+    if (url.endsWith("/terminal/open"))
+      return { ok: true, json: async () => ({ lease: "test-lease" }) };
+    if (url.includes("/terminal?"))
+      return { ok: true, json: async () => ({ events: [] }) };
+    return {
+      ok: true,
+      json: async () =>
+        url === "/api/state"
+          ? { ...emptyState, projects: [project], runs }
+          : run,
+    };
+  });
+  vi.stubGlobal("fetch", request);
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
+  render(<App />);
+  await user.click(
+    await screen.findByRole("button", { name: /^Open Shell project/ }),
+  );
+  await user.click(
+    screen.getByRole("button", { name: "New item in Shell project" }),
+  );
+  await user.click(screen.getByRole("button", { name: /^New terminal/ }));
+  expect(
+    await screen.findByRole("button", { name: "Close terminal" }),
+  ).toBeTruthy();
+  expect(
+    screen.queryByRole("textbox", { name: "Follow-up instruction" }),
+  ).toBeNull();
+  expect(
+    screen.queryByText(/Commands can change your original project files/),
+  ).toBeNull();
+  expect(screen.queryByRole("heading", { name: "Terminal" })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Open project shell" }),
+  ).toBeNull();
+  expect(
+    request.mock.calls.filter(([url]) => url.endsWith("/terminal/open")),
+  ).toHaveLength(1);
+  expect(request.mock.calls.some(([url]) => url.endsWith("/start"))).toBe(
+    false,
+  );
+  await user.click(screen.getByRole("button", { name: "Close terminal" }));
+  expect(
+    await screen.findByRole("button", { name: "Reopen terminal" }),
+  ).toBeTruthy();
+  expect(
+    request.mock.calls.filter(([url]) => url.endsWith("/terminal/open")),
+  ).toHaveLength(1);
+});
+
+test("direct terminal opens once in StrictMode and failed opens require an explicit retry", async () => {
+  const user = userEvent.setup();
+  const request = vi.fn(async () => ({
+    ok: false,
+    status: 409,
+    json: async () => ({
+      error: "This shell is controlled by another client.",
+    }),
+  }));
+  vi.stubGlobal("fetch", request);
+  const act = async (fn) => {
+    try {
+      return await fn();
+    } catch {
+      return null;
+    }
+  };
+  render(
+    <React.StrictMode>
+      <TerminalView
+        standalone
+        run={{ id: "locked", workspaceKind: "main" }}
+        act={act}
+      />
+    </React.StrictMode>,
+  );
+  expect(
+    await screen.findByText("This shell is controlled by another client."),
+  ).toBeTruthy();
+  expect(request).toHaveBeenCalledTimes(1);
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(request).toHaveBeenCalledTimes(2);
+});
+
 test("project sidebar only shows the selected project without reviewer duplicates or navigation on collapse", async () => {
   const user = userEvent.setup(),
     goRun = vi.fn(),

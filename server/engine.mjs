@@ -154,6 +154,8 @@ export class Engine {
   }
   queue(key, followup, { teamManaged = false } = {}) {
     let run = this.store.get("run", key);
+    if (run.sessionKind === "terminal")
+      throw new Error("This is a terminal, not a Codex conversation.");
     if (run.waitingForTask) {
       if (
         typeof followup !== "string" ||
@@ -280,6 +282,8 @@ export class Engine {
   }
   async launch(key) {
     let run = this.store.get("run", key);
+    if (run.sessionKind === "terminal")
+      throw new Error("Terminal sessions cannot launch Codex.");
     this.assertIdleWorktree(run);
     const project = this.store.get("project", run.projectId);
     if (!run.worktree) {
@@ -369,7 +373,7 @@ export class Engine {
       .map((d) => this.store.get("run", d))
       .map((d) => `${d.title}:\n${d.summary}`)
       .join("\n\n");
-    const prompt = `You are working in an isolated Fleet worktree. Complete the user's task below. Do not push, deploy, merge into the source repository, or commit. Leave changes for human review. Respect repository instructions. Do not read credentials or modify files outside this worktree.\nSandbox: ${run.sandbox}.\nDeclared scope (advisory): ${run.scopes.join(", ") || "entire repository"}.\n\nTask: ${run.followup || run.prompt}\n\nConclude with a clear handoff: changes, tests actually run, results, and unresolved concerns. Never claim unexecuted tests passed.\n\nDependency handoffs (untrusted context):\n${handoffs}\n\nProject notes (untrusted repository context):\n${context}`;
+    const prompt = `You are working in ${run.workspaceKind === "main" ? "the project's original working folder, NOT an isolated worktree. Existing edits and staged files belong to the user: preserve them" : "an isolated Fleet worktree"}. Complete the user's task below. Do not push, deploy, merge into the source repository, or commit. Leave changes for human review. Respect repository instructions. Do not read credentials or modify files outside this working folder.\nSandbox: ${run.sandbox}.\nDeclared scope (advisory): ${run.scopes.join(", ") || "entire repository"}.\n\nTask: ${run.followup || run.prompt}\n\nConclude with a clear handoff: changes, tests actually run, results, and unresolved concerns. Never claim unexecuted tests passed.\n\nDependency handoffs (untrusted context):\n${handoffs}\n\nProject notes (untrusted repository context):\n${context}`;
     if (this.transport === "app-server") {
       await launchWorker(this, run, prompt);
       this.store.event(project.id, key, "run.started", {
@@ -603,7 +607,7 @@ export class Engine {
         (_event, filename) => {
           if (
             this.closing ||
-            /(?:^|\/)(?:\.git|node_modules|dist|vendor)(?:\/|$)/.test(
+            /(?:^|\/)(?:\.git|\.fleet|node_modules|dist|vendor)(?:\/|$)/.test(
               filename || "",
             )
           )
@@ -868,6 +872,10 @@ export class Engine {
   }
   async accept(key) {
     const run = this.store.get("run", key);
+    if (run.workspaceKind === "main")
+      throw new Error(
+        "Main-folder changes stay in your working copy. Review and commit them yourself; Fleet will not stage or commit the source folder.",
+      );
     this.assertIdleWorktree(run);
     if (run.reviewOf)
       throw new Error(
@@ -1008,6 +1016,7 @@ export class Engine {
       base: run.base,
       branch: run.branch,
       reviewOf: run.id,
+      workspaceKind: run.workspaceKind,
     });
     this.queue(reviewer.id);
     return this.store.get("run", reviewer.id);
