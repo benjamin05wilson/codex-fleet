@@ -26,6 +26,7 @@ import { Terminals } from "./terminals.mjs";
 import { Workflows, templates } from "./workflows.mjs";
 import { Teams, teamRoles, teamDefaults } from "./teams.mjs";
 import { searchWorkspace, previewFile } from "./search.mjs";
+import { onboardingSettings, saveOnboarding } from "./onboarding.mjs";
 
 const exec = promisify(execFile);
 async function body(req) {
@@ -393,6 +394,10 @@ export async function createApp({
           });
           return;
         }
+        if (req.method === "POST" && path === "/api/onboarding") {
+          send(saveOnboarding(store, await body(req)));
+          return;
+        }
         if (req.method === "GET" && path === "/api/state") {
           const allRuns = store.list("run");
           const runs = allRuns
@@ -405,6 +410,7 @@ export async function createApp({
             }));
           send({
             csrf,
+            onboarding: onboardingSettings(store),
             projects: store.list("project"),
             runs,
             deletedRuns: allRuns

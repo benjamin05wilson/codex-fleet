@@ -1553,6 +1553,7 @@ test("conversation permissions are saved explicitly without submitting an instru
   expect(JSON.parse(mutation[1].body)).toEqual({
     sandbox: "workspace-write",
     model: "",
+    yoloApproved: false,
     rememberDefaults: true,
     approved: true,
   });
@@ -1629,7 +1630,7 @@ test("reviewer badge stays collapsed and reports the latest round, not an older 
   await user.click(screen.getByRole("button", { name: /security/ }));
   expect(goRun).toHaveBeenCalledWith("security");
 });
-test("quick session opens a blank scratch conversation with explicit read-only defaults", async () => {
+test("quick session opens a blank scratch conversation with Standard editing defaults", async () => {
   const user = userEvent.setup(),
     created = vi.fn();
   const request = vi.fn(async () => ({
@@ -1649,7 +1650,7 @@ test("quick session opens a blank scratch conversation with explicit read-only d
   );
   expect(
     screen
-      .getByRole("button", { name: "Read only" })
+      .getByRole("button", { name: "Allow edits" })
       .getAttribute("aria-pressed"),
   ).toBe("true");
   expect(request).not.toHaveBeenCalled();
@@ -1660,7 +1661,7 @@ test("quick session opens a blank scratch conversation with explicit read-only d
   expect(JSON.parse(request.mock.calls[0][1].body)).toMatchObject({
     approved: true,
     prompt: "",
-    sandbox: "read-only",
+    sandbox: "workspace-write",
     projectId: null,
     rememberDefaults: false,
   });

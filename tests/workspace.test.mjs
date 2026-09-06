@@ -235,15 +235,14 @@ test("sidebar actions prepare distinct workspaces without changing source edits 
   for (const run of [worktree, main, terminal]) {
     assert.equal(run.attempt, 0);
     assert.equal(run.waitingForTask, true);
-    assert.equal(run.sandbox, "read-only");
+    assert.equal(
+      run.sandbox,
+      run.sessionKind === "terminal" ? "read-only" : "workspace-write",
+    );
     assert.ok(!run.threadId && !run.shellOpen);
   }
   assert.throws(() => app.engine.queue(terminal.id, "TEST_EDIT"), /terminal/);
   await assert.rejects(app.engine.accept(main.id), /will not stage or commit/);
-  updateSessionOptions(app, main.id, {
-    approved: true,
-    sandbox: "workspace-write",
-  });
   app.engine.queue(main.id, "TEST_EDIT");
   await until(() => app.store.get("run", main.id).status === "review");
   assert.equal(app.store.get("run", main.id).worktree, project.path);
@@ -330,7 +329,7 @@ test("explicit idle settings apply to the next turn and can be remembered withou
         approved: true,
         sandbox: "danger-full-access",
       }),
-    /Invalid/,
+    /acknowledge/,
   );
   const updated = updateSessionOptions(app, run.id, {
     approved: true,
@@ -404,7 +403,7 @@ test("quick sessions require consent, validate permissions and never silently sw
   await assert.rejects(quickSession(app, {}), /Confirm/);
   await assert.rejects(
     quickSession(app, { approved: true, sandbox: "danger-full-access" }),
-    /Invalid/,
+    /acknowledge/,
   );
   await assert.rejects(
     quickSession(app, { approved: true, prompt: 123 }),

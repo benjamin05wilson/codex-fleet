@@ -10,12 +10,16 @@ import {
 import { deletionBlockedReason } from "../../shared/session-lifecycle.mjs";
 import { Button, Dialog, Field, Status, api } from "../ui.jsx";
 import { useCodexMetadata } from "./codex-metadata.jsx";
+import { codingDefault, yoloWarning } from "../../shared/permissions.mjs";
 
 export function SessionOptions({ run, act, onClose }) {
   const [sandbox, setSandbox] = useState(run.sandbox);
   const [model, setModel] = useState(run.model || "");
   const [remember, setRemember] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [yoloApproved, setYoloApproved] = useState(
+    run.sandbox === "danger-full-access" && run.yoloApproved === true,
+  );
   const metadata = useCodexMetadata();
   return (
     <Dialog title="Conversation settings" onClose={onClose}>
@@ -30,6 +34,7 @@ export function SessionOptions({ run, act, onClose }) {
                 model,
                 rememberDefaults: remember,
                 approved: true,
+                yoloApproved,
               }),
             );
             if (result) onClose();
@@ -48,16 +53,33 @@ export function SessionOptions({ run, act, onClose }) {
               <option value="workspace-write">
                 Allow edits in the working folder
               </option>
+              {!run.teamId && !run.teamRole && !run.missionId && (
+                <option value="danger-full-access">YOLO · full access</option>
+              )}
             </select>
           </Field>
           <p className="muted-copy">
-            {sandbox === "read-only"
-              ? "Codex can inspect files without changing them."
-              : run.workspaceKind === "main"
-                ? "Codex can edit your original project folder. Changes are not isolated."
-                : "Codex can edit its isolated working folder. Your source folder stays untouched."}{" "}
-            No unattended permission escalation.
+            {sandbox === "danger-full-access"
+              ? yoloWarning
+              : sandbox === "read-only"
+                ? "Codex can inspect files without changing them."
+                : run.workspaceKind === "main"
+                  ? "Codex can edit your project's original folder, including existing uncommitted files. Changes are not isolated."
+                  : "Codex can edit its isolated working folder. Your source folder stays untouched."}{" "}
+            {sandbox !== "danger-full-access" &&
+              "No unattended permission escalation."}
           </p>
+          {sandbox === "danger-full-access" && (
+            <label className="check-label">
+              <input
+                type="checkbox"
+                required
+                checked={yoloApproved}
+                onChange={(e) => setYoloApproved(e.target.checked)}
+              />
+              I understand and approve full-access YOLO permissions.
+            </label>
+          )}
           <Field
             label="Model"
             hint="Blank uses the installed default. You can select a discovered model or enter its name."
@@ -127,7 +149,7 @@ export function QuickSession({
   const project = state.projects.find((p) => p.id === target);
   const saved =
     project?.sessionDefaults || (!target ? state.scratchDefaults : null) || {};
-  const [sandbox, setSandbox] = useState(saved.sandbox || "read-only");
+  const [sandbox, setSandbox] = useState(saved.sandbox || codingDefault);
   const [model, setModel] = useState(saved.model || "");
   const [useTeam, setUseTeam] = useState(saved.useTeam ?? false);
   const [remember, setRemember] = useState(false);
@@ -140,7 +162,7 @@ export function QuickSession({
       state.projects.find((p) => p.id === id)?.sessionDefaults ||
       (!id ? state.scratchDefaults : null) ||
       {};
-    setSandbox(defaults.sandbox || "read-only");
+    setSandbox(defaults.sandbox || codingDefault);
     setModel(defaults.model || "");
     setUseTeam(defaults.useTeam ?? false);
     setRemember(false);

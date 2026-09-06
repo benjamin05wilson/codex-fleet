@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { limits } from "./limits.mjs";
 import { CodexClient, sandboxPolicy } from "./codex-client.mjs";
 import { redactValue, redact } from "./sentinel.mjs";
+import { validatePermissions } from "../shared/permissions.mjs";
 
 const directory = process.argv[2];
 const config = JSON.parse(readFileSync(join(directory, "config.json"), "utf8"));
@@ -133,7 +134,7 @@ try {
   const options = {
     cwd: run.worktree,
     approvalPolicy: "never",
-    sandbox: run.sandbox === "read-only" ? "read-only" : "workspace-write",
+    sandbox: validatePermissions(run),
     ...(run.model ? { model: run.model } : {}),
   };
   const result = await client.request(
@@ -151,7 +152,7 @@ try {
     input: [{ type: "text", text: config.prompt }],
     cwd: run.worktree,
     approvalPolicy: "never",
-    sandboxPolicy: sandboxPolicy(run.worktree, run.sandbox === "read-only"),
+    sandboxPolicy: sandboxPolicy(run.worktree, run.sandbox),
     ...(run.outputSchema ? { outputSchema: run.outputSchema } : {}),
   });
 } catch (error) {

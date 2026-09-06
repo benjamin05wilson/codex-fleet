@@ -5,6 +5,8 @@ import { git, repository, safeRead, createWorktree } from "./git.mjs";
 import { searchablePath } from "./search.mjs";
 import { redact } from "./sentinel.mjs";
 import { deletionBlockedReason } from "../shared/session-lifecycle.mjs";
+import { validatePermissions } from "../shared/permissions.mjs";
+import { newSessionDefaults, onboardingSettings } from "./onboarding.mjs";
 
 export function deleteSession({ store, engine }, key, input) {
   if (input.approved !== true) throw new Error("Confirm deleting this chat.");
@@ -53,15 +55,16 @@ export function restoreSession({ store, engine }, key) {
 }
 
 export function sessionDefaults(input = {}) {
-  const sandbox = input.sandbox || "read-only",
+  const sandbox = validatePermissions(input),
     model = input.model || "";
-  if (
-    !["read-only", "workspace-write"].includes(sandbox) ||
-    typeof model !== "string" ||
-    model.length > 150
-  )
+  if (typeof model !== "string" || model.length > 150)
     throw new Error("Invalid session defaults.");
-  return { sandbox, model, useTeam: input.useTeam === true };
+  return {
+    sandbox,
+    model,
+    useTeam: input.useTeam === true,
+    ...(sandbox === "danger-full-access" ? { yoloApproved: true } : {}),
+  };
 }
 export async function quickSession(app, input) {
   if (input.approved !== true)
@@ -75,13 +78,12 @@ export async function quickSession(app, input) {
   let project = input.projectId
     ? app.store.get("project", input.projectId)
     : null;
-  const saved =
-    project?.sessionDefaults ||
-    (!project
-      ? app.store.list("preferences").find((p) => p.id === "scratch-session")
-      : null) ||
-    {};
+  const saved = newSessionDefaults(app.store, project);
   const defaults = sessionDefaults({ ...saved, ...input });
+  if (defaults.useTeam && defaults.sandbox === "danger-full-access")
+    throw new Error(
+      "YOLO is only available for independent chats, not managed team tasks.",
+    );
   if (defaults.useTeam && (!project || !app.teams.get(project.id)?.enabled))
     throw new Error("Enable the project team before using its Developer.");
   if (defaults.useTeam && !prompt)
@@ -123,6 +125,19 @@ export async function quickSession(app, input) {
     run = await app.teams.task(project.id, task);
   else {
     run = app.engine.create(project.id, task);
+    if (
+      project.kind !== "scratch" &&
+      onboardingSettings(app.store)?.workspaceMode === "main"
+    ) {
+      const repo = await repository(project.path);
+      run = app.store.patch("run", run.id, {
+        worktree: repo.path,
+        base: repo.head,
+        branch: repo.branch,
+        workspaceKind: "main",
+        sessionKind: "main",
+      });
+    }
     if (prompt) run = app.engine.queue(run.id);
     else run = app.store.patch("run", run.id, { waitingForTask: true });
   }
@@ -148,7 +163,7 @@ export async function newWorkspaceSession(app, input) {
   const defaults =
     input.kind === "terminal"
       ? { sandbox: "read-only" }
-      : sessionDefaults(project.sessionDefaults || {});
+      : sessionDefaults(newSessionDefaults(app.store, project));
   const run = app.engine.create(project.id, {
     title:
       input.kind === "terminal"
@@ -250,6 +265,7 @@ export function updateSessionOptions({ store, engine }, key, input) {
   const updated = store.patch("run", key, {
     sandbox: defaults.sandbox,
     model: defaults.model,
+    yoloApproved: defaults.yoloApproved === true,
   });
   if (input.rememberDefaults === true) {
     const project = store.get("project", run.projectId);

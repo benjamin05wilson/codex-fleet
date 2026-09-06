@@ -110,8 +110,11 @@ export class CodexClient extends EventEmitter {
   }
 }
 
-export const sandboxPolicy = (cwd, readOnly = false) =>
-  readOnly
+export const sandboxPolicy = (cwd, mode = "workspace-write") => {
+  if (mode === "danger-full-access") return { type: "dangerFullAccess" };
+  if (![true, false, "read-only", "workspace-write"].includes(mode))
+    throw new Error("Unsupported sandbox policy.");
+  return mode === true || mode === "read-only"
     ? { type: "readOnly" }
     : {
         type: "workspaceWrite",
@@ -120,6 +123,7 @@ export const sandboxPolicy = (cwd, readOnly = false) =>
         excludeTmpdirEnvVar: true,
         excludeSlashTmp: true,
       };
+};
 
 export async function sandboxCheck(bin, cwd, command, signal) {
   const client = new CodexClient(bin, cwd);
