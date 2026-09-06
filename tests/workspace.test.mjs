@@ -18,8 +18,154 @@ import {
   newWorkspaceSession,
   sessionFiles,
   updateSessionOptions,
+  deleteSession,
+  restoreSession,
 } from "../server/workspace.mjs";
 import { createWorktree, git } from "../server/git.mjs";
+import { Store } from "../server/store.mjs";
+
+test("deleting chats is recoverable, durable and preserves worktrees, history and linked reviews", async (t) => {
+  const { app, root } = await fixture(t);
+  const project = await app.addProject({
+    mode: "create",
+    parentPath: root,
+    folderName: "trash-source",
+    gitApproved: true,
+  });
+  const run = await newWorkspaceSession(app, {
+    approved: true,
+    projectId: project.id,
+    kind: "worktree",
+  });
+  await writeFile(join(run.worktree, "keep.txt"), "uncommitted work");
+  const reviewer = app.engine.create(project.id, {
+    title: "Review",
+    prompt: "Review this work",
+  });
+  app.store.patch("run", reviewer.id, {
+    worktree: run.worktree,
+    reviewOf: run.id,
+  });
+  app.store.event(project.id, run.id, "test.history", {
+    text: "Keep the transcript",
+  });
+  app.engine.watchWorktree(run);
+  assert.throws(() => deleteSession(app, run.id, {}), /Confirm/);
+  deleteSession(app, run.id, { approved: true });
+  assert.ok(app.store.get("run", run.id).deletedAt);
+  assert.ok(app.store.get("run", reviewer.id).deletedAt);
+  assert.equal(app.engine.watchers.has(run.id), false);
+  assert.equal(
+    await readFile(join(run.worktree, "keep.txt"), "utf8"),
+    "uncommitted work",
+  );
+  assert.ok(
+    (await git(project.path, ["worktree", "list", "--porcelain"])).includes(
+      run.worktree,
+    ),
+  );
+  assert.ok(
+    app.store.events({ runId: run.id }).some((e) => e.type === "test.history"),
+  );
+  const reopened = new Store(join(root, "data", "fleet.sqlite"));
+  assert.ok(reopened.get("run", run.id).deletedAt);
+  reopened.close();
+  assert.throws(() => app.engine.queue(run.id, "Explain"), /Restore/);
+  assert.throws(() => restoreSession(app, reviewer.id), /parent chat/);
+  const restored = restoreSession(app, run.id);
+  assert.equal(restored.deletedAt, null);
+  assert.equal(app.store.get("run", reviewer.id).deletedAt, null);
+  assert.equal(restored.status, "draft");
+  assert.equal(restored.attempt, 0);
+  assert.ok(!restored.shellOpen);
+});
+
+test("delete refuses live or managed sessions and checks linked reviews before changing any record", async (t) => {
+  const { app } = await fixture(t);
+  const run = await quickSession(app, { approved: true });
+  for (const changed of [
+    { status: "running" },
+    { status: "queued" },
+    { shellOpen: true },
+    { preview: { status: "running" } },
+    { teamId: "team" },
+    { workflowId: "workflow" },
+    { missionId: "mission" },
+  ]) {
+    app.store.put("run", { ...run, ...changed });
+    assert.throws(
+      () => deleteSession(app, run.id, { approved: true }),
+      /Stop|Close|managed/,
+    );
+    assert.ok(!app.store.get("run", run.id).deletedAt);
+  }
+  app.store.put("run", run);
+  const review = app.engine.create(run.projectId, {
+    title: "Review",
+    prompt: "Read only",
+  });
+  app.store.patch("run", review.id, { reviewOf: run.id, status: "running" });
+  assert.throws(() => deleteSession(app, run.id, { approved: true }), /Stop/);
+  assert.ok(!app.store.get("run", run.id).deletedAt);
+  app.store.patch("run", review.id, { status: "draft" });
+});
+
+test("delete/restore API enforces CSRF, hides deleted chats from state/search and blocks stale endpoints", async (t) => {
+  const { app } = await fixture(t);
+  const run = await quickSession(app, { approved: true });
+  app.store.patch("run", run.id, { title: "Recoverable conversation" });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}/api`;
+  const state = await fetch(base + "/state").then((r) => r.json());
+  const mutate = (path, method, input, token = state.csrf) =>
+    fetch(base + path, {
+      method,
+      headers: { "Content-Type": "application/json", "x-fleet-token": token },
+      body: JSON.stringify(input),
+    });
+  assert.equal(
+    (await mutate(`/runs/${run.id}`, "DELETE", { approved: true }, "bad"))
+      .status,
+    403,
+  );
+  assert.equal((await mutate(`/runs/${run.id}`, "DELETE", {})).status, 400);
+  assert.equal(
+    (await mutate(`/runs/${run.id}`, "DELETE", { approved: true })).status,
+    200,
+  );
+  const deleted = await fetch(base + "/state").then((r) => r.json());
+  assert.equal(deleted.runs.length, 0);
+  assert.equal(deleted.deletedRuns[0].id, run.id);
+  assert.equal(deleted.deletedRuns[0].prompt, undefined);
+  const search = await fetch(base + "/search?q=Recoverable").then((r) =>
+    r.json(),
+  );
+  assert.ok(!search.some((r) => r.kind === "session"));
+  for (const path of [`/runs/${run.id}`, `/runs/${run.id}/files`])
+    assert.equal((await fetch(base + path)).status, 410);
+  for (const action of ["start", "terminal/open", "options", "accept"])
+    assert.equal(
+      (
+        await mutate(`/runs/${run.id}/${action}`, "POST", {
+          prompt: "Go",
+          approved: true,
+        })
+      ).status,
+      410,
+    );
+  assert.equal(
+    (await mutate(`/runs/${run.id}/restore`, "POST", {}, "bad")).status,
+    403,
+  );
+  assert.equal(
+    (await mutate(`/runs/${run.id}/restore`, "POST", {})).status,
+    200,
+  );
+  const restored = await fetch(base + "/state").then((r) => r.json());
+  assert.equal(restored.runs[0].id, run.id);
+  assert.equal(restored.deletedRuns.length, 0);
+  assert.equal(restored.runs[0].attempt, 0);
+});
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "fleet-workspace-test-"));

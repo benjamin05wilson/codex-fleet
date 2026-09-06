@@ -1,5 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
-import { GitBranch, MessageSquare, Plus, Terminal } from "lucide-react";
+import {
+  GitBranch,
+  MessageSquare,
+  Plus,
+  Terminal,
+  Trash2,
+  RotateCcw,
+} from "lucide-react";
+import { deletionBlockedReason } from "../../shared/session-lifecycle.mjs";
 import { Button, Dialog, Field, Status, api } from "../ui.jsx";
 import { useCodexMetadata } from "./codex-metadata.jsx";
 
@@ -403,6 +411,9 @@ export function WorkspaceSidebar({
   goRun,
   chooseProject,
   onNew,
+  onDelete,
+  onTrash,
+  trashCount = 0,
   busy,
 }) {
   const [query, setQuery] = useState("");
@@ -536,6 +547,21 @@ export function WorkspaceSidebar({
                         </span>
                       </div>
                     </button>
+                    {onDelete && (
+                      <span
+                        className="session-delete-action"
+                        title={deletionBlockedReason(run) || "Move to Trash"}
+                      >
+                        <button
+                          className="icon-button"
+                          aria-label={`Delete ${run.sessionKind === "terminal" ? "terminal" : "chat"}: ${run.title}`}
+                          disabled={busy || !!deletionBlockedReason(run)}
+                          onClick={() => onDelete(run)}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </span>
+                    )}
                   </div>
                 ))}
               {!collapsed[group.id] && !runs.length && (
@@ -556,7 +582,68 @@ export function WorkspaceSidebar({
           </p>
         )}
       </div>
+      {onTrash && (
+        <button className="sidebar-trash" onClick={onTrash}>
+          <Trash2 size={14} />
+          Trash{trashCount > 0 && <span>{trashCount}</span>}
+        </button>
+      )}
     </section>
+  );
+}
+
+export function DeleteSessionDialog({ run, onClose, onDelete, busy }) {
+  const label = run.sessionKind === "terminal" ? "terminal" : "chat";
+  const reason = deletionBlockedReason(run);
+  return (
+    <Dialog title={`Delete ${label}?`} onClose={onClose}>
+      <p className="delete-session-copy">
+        Move <strong>{run.title}</strong> to Trash? You can restore it later.
+        Chat history, project files and Git worktrees are kept.
+      </p>
+      {reason && <p className="notice">{reason}</p>}
+      <div className="dialog-actions">
+        <Button autoFocus disabled={busy} onClick={onClose}>
+          Cancel
+        </Button>
+        <Button disabled={busy || !!reason} onClick={onDelete}>
+          Delete {label}
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
+export function SessionTrash({ runs, projects, busy, onRestore, onClose }) {
+  return (
+    <Dialog
+      title="Trash"
+      subtitle="Deleted chats stay here until you restore them. Their history and files are kept."
+      onClose={onClose}
+    >
+      <div className="session-trash-list">
+        {!runs.length && <p className="muted-copy">Trash is empty.</p>}
+        {runs.map((run) => (
+          <div className="session-trash-row" key={run.id}>
+            <div>
+              <strong>{run.title}</strong>
+              <small>
+                {projects.find((p) => p.id === run.projectId)?.name ||
+                  "Project"}
+              </small>
+            </div>
+            <Button
+              icon={RotateCcw}
+              aria-label={`Restore: ${run.title}`}
+              disabled={busy}
+              onClick={() => onRestore(run.id)}
+            >
+              Restore
+            </Button>
+          </div>
+        ))}
+      </div>
+    </Dialog>
   );
 }
 

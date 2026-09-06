@@ -84,7 +84,10 @@ export class Engine {
     this.busy = false;
     this.closing = false;
     for (const run of store.list("run"))
-      if (ACTIVE.includes(run.status) || run.status === "queued") {
+      if (
+        !run.deletedAt &&
+        (ACTIVE.includes(run.status) || run.status === "queued")
+      ) {
         if (run.worker && ["running", "pausing"].includes(run.status)) {
           attachWorker(this, run);
           continue;
@@ -101,6 +104,7 @@ export class Engine {
     this.timer = setInterval(() => this.tick().catch(() => {}), 800);
     this.scanTimer = setInterval(() => this.scanActive(), 4000);
     for (const run of store.list("run")) {
+      if (run.deletedAt) continue;
       if (run.worktree) this.watchWorktree(run);
       if (run.shellOpen) {
         store.patch("run", run.id, { shellOpen: false, validation: null });
@@ -121,9 +125,13 @@ export class Engine {
       throw new Error("Unsupported sandbox.");
     const dependencies = input.dependencies || [];
     if (!Array.isArray(dependencies)) throw new Error("Invalid dependencies.");
-    for (const key of dependencies)
-      if (this.store.get("run", key).projectId !== projectId)
+    for (const key of dependencies) {
+      const parent = this.store.get("run", key);
+      if (parent.deletedAt)
+        throw new Error("Restore a deleted dependency before using it.");
+      if (parent.projectId !== projectId)
         throw new Error("Dependencies must belong to this project.");
+    }
     const scopes = (input.scopes || [])
       .map((s) => String(s).trim())
       .filter(Boolean);
@@ -223,7 +231,7 @@ export class Engine {
       for (const run of this.store
         .list("run")
         .reverse()
-        .filter((r) => r.status === "queued")) {
+        .filter((r) => !r.deletedAt && r.status === "queued")) {
         if (this.processes.size >= this.concurrency) break;
         const conflict = this.store
           .list("run")
@@ -521,6 +529,7 @@ export class Engine {
   }
   async scanWorktree(key) {
     const run = this.store.get("run", key);
+    if (run.deletedAt) return { files: [], diff: "" };
     const change = await changes(run);
     this.store.patch("run", key, { files: change.files });
     const coverage = {};
@@ -585,7 +594,10 @@ export class Engine {
     for (const run of this.store
       .list("run")
       .filter(
-        (r) => r.worktree && ["review", "paused", "failed"].includes(r.status),
+        (r) =>
+          !r.deletedAt &&
+          r.worktree &&
+          ["review", "paused", "failed"].includes(r.status),
       ))
       if (!candidates.has(run.id)) candidates.set(run.id, { scanBusy: false });
     for (const [key, state] of candidates)
@@ -599,7 +611,7 @@ export class Engine {
       }
   }
   watchWorktree(run) {
-    if (this.watchers.has(run.id) || !run.worktree) return;
+    if (run.deletedAt || this.watchers.has(run.id) || !run.worktree) return;
     try {
       const watcher = watch(
         run.worktree,
@@ -965,6 +977,8 @@ export class Engine {
     }
   }
   assertIdleWorktree(run, { allowTeamReaders = true } = {}) {
+    if (run.deletedAt)
+      throw new Error("Restore this chat from Trash before using it.");
     if (this.previews?.has(run.worktree))
       throw new Error(
         "Stop the preview before coding, reviewing or accepting this worktree.",
