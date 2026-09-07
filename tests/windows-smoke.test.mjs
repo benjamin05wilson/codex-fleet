@@ -70,18 +70,19 @@ test(
       dependencies: [],
     };
     app.store.put("run", run);
-    const { lease } = await app.terminals.open(run, "test-owner");
-    app.terminals.control(run.id, lease, "input", {
+    const terminals = app.engine.terminals;
+    const { lease } = await terminals.open(run, "test-owner");
+    terminals.control(run.id, lease, "input", {
       data: "Write-Output ('FLEET_' + 'WINDOWS_OK')\r",
     });
     await until(() =>
-      app.terminals
+      terminals
         .get(run.id)
         .events.some((e) => e.data.includes("FLEET_WINDOWS_OK")),
     );
-    app.terminals.control(run.id, lease, "resize", { cols: 90, rows: 24 });
-    app.terminals.control(run.id, lease, "close", {});
-    await until(() => !app.terminals.sessions.has(run.id));
+    terminals.control(run.id, lease, "resize", { cols: 90, rows: 24 });
+    terminals.control(run.id, lease, "close", {});
+    await until(() => !terminals.sessions.has(run.id));
   },
 );
 test(
