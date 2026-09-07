@@ -72,13 +72,25 @@ test(
     app.store.put("run", run);
     const terminals = app.engine.terminals;
     const { lease } = await terminals.open(run, "test-owner");
+    const terminal = terminals.get(run.id);
+    // A real xterm client answers PowerShell's cursor-position query. This
+    // protocol-level smoke test has no renderer, so provide that response.
+    let transcript = "";
+    let pending = "";
+    terminal.process.onData((data) => {
+      transcript += data;
+      pending += data;
+      if (pending.includes("\x1b[6n")) {
+        terminal.process.write("\x1b[1;1R");
+        pending = "";
+      } else pending = pending.slice(-8);
+    });
+    t.after(() => console.log("Windows terminal transcript:", JSON.stringify(transcript)));
     terminals.control(run.id, lease, "input", {
       data: "Write-Output ('FLEET_' + 'WINDOWS_OK')\r",
     });
     await until(() =>
-      terminals
-        .get(run.id)
-        .events.some((e) => e.data.includes("FLEET_WINDOWS_OK")),
+      transcript.includes("FLEET_WINDOWS_OK"),
     );
     terminals.control(run.id, lease, "resize", { cols: 90, rows: 24 });
     terminals.control(run.id, lease, "close", {});
