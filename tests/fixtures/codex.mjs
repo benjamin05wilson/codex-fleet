@@ -46,6 +46,18 @@ if (process.argv.includes("app-server")) {
     else if (["thread/start", "thread/resume"].includes(request.method)) {
       threadOptions = request.params;
       reply({ thread: { id: "fixture-thread", sessionId: "fixture-root" } });
+    } else if (request.method === "mcpServerStatus/list") {
+      reply({
+        data: threadOptions?.config?.["mcp_servers.fleet_browser"]
+          ? [
+              {
+                name: "fleet_browser",
+                tools: { fleet_browser: { name: "fleet_browser" } },
+              },
+            ]
+          : [],
+        nextCursor: null,
+      });
     } else if (request.method === "turn/interrupt") {
       reply({});
       notify("turn/completed", {

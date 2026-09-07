@@ -15,12 +15,6 @@ extraResources:
       - dist/**
       - node_modules/node-pty/**
       - node_modules/node-addon-api/**
-  - from: node_modules/agent-browser
-    to: runtime/node_modules/agent-browser
-    filter:
-      - bin/agent-browser-darwin-arm64
-      - LICENSE
-      - package.json
 mac:
   icon: build/fleet.icns
   category: public.app-category.developer-tools

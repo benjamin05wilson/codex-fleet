@@ -27,7 +27,7 @@ import { Workflows, templates } from "./workflows.mjs";
 import { Teams, teamRoles, teamDefaults } from "./teams.mjs";
 import { searchWorkspace, previewFile } from "./search.mjs";
 import { onboardingSettings, saveOnboarding } from "./onboarding.mjs";
-import { Browsers } from "./browsers.mjs";
+import { NativeOnlyBrowsers } from "./native-only-browsers.mjs";
 
 const exec = promisify(execFile);
 async function body(req) {
@@ -51,6 +51,7 @@ export async function createApp({
   concurrency = 3,
   transport = "app-server",
   browserOptions,
+  browserFactory = () => new NativeOnlyBrowsers(),
 }) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const store = new Store(join(dataDir, "fleet.sqlite"));
@@ -64,7 +65,7 @@ export async function createApp({
   engine.terminals = terminals;
   const previews = new Previews(engine);
   engine.previews = previews;
-  const browsers = new Browsers(engine, browserOptions);
+  const browsers = browserFactory(engine, browserOptions);
   engine.browsers = browsers;
   const workflows = new Workflows(store, engine);
   const teams = new Teams(store, engine, brain);
@@ -346,7 +347,7 @@ export async function createApp({
           }
         }
         const browserMatch = path.match(
-          /^\/api\/projects\/([^/]+)\/browser(?:\/(start|stop|control|take|grant|approve|frame|tabs))?$/,
+          /^\/api\/projects\/([^/]+)\/browser(?:\/(start|stop|control|take|grant|approve|frame|frames|tabs))?$/,
         );
         if (browserMatch) {
           if (req.headers["x-fleet-token"] !== csrf) {
@@ -365,6 +366,8 @@ export async function createApp({
             send(browsers.state(projectId, clientId));
           else if (req.method === "GET" && action === "frame")
             send(browsers.frame(projectId));
+          else if (req.method === "GET" && action === "frames")
+            browsers.streamFrames(projectId, res);
           else if (req.method === "GET" && action === "tabs")
             send(await browsers.tabs(projectId));
           else if (req.method === "POST") {
@@ -470,7 +473,10 @@ export async function createApp({
             }));
           send({
             csrf,
-            browserAvailable: true,
+            browserAvailable: false,
+            browserMode: "native",
+            browserDesktopOnly: true,
+            browserAgentAvailable: false,
             onboarding: onboardingSettings(store),
             projects: store.list("project"),
             runs,

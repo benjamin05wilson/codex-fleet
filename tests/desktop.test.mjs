@@ -17,12 +17,14 @@ test("desktop entry finishes loading before Electron becomes ready", () => {
           ? { format: 'module', shortCircuit: true, source: \`
               export const app = {
                 isPackaged: false,
+                commandLine: { appendSwitch() {} },
                 setName() {},
                 requestSingleInstanceLock() { return true; },
                 on() {},
                 whenReady() { return new Promise(() => {}); }
               };
               export const BrowserWindow = class {};
+              export const WebContentsView = class {};
               export const session = {};
               export const dialog = {};
               export const ipcMain = {};

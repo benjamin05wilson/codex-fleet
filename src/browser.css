@@ -5,6 +5,11 @@
   gap: 0;
   color: var(--text, #dedee3);
 }
+.native-browser-surface {
+  width: 100%;
+  height: clamp(240px, 62vh, 850px);
+  background: #17191e;
+}
 .browser-start {
   padding: 28px 22px;
   display: flex;
@@ -33,7 +38,7 @@
   font-size: 12px;
 }
 .browser-start input:not([type="checkbox"]),
-.browser-start textarea {
+.browser-start select {
   width: 100%;
   padding: 10px;
   background: #13151a;
@@ -41,20 +46,6 @@
   border-radius: 6px;
   color: inherit;
   font: inherit;
-}
-.browser-start textarea {
-  min-height: 76px;
-  margin-top: 10px;
-}
-.browser-start summary,
-.browser-sites summary {
-  cursor: pointer;
-  color: #aaaeb9;
-  font-size: 12px;
-}
-.browser-start details p {
-  font-size: 12px;
-  margin-top: 10px;
 }
 .browser-consent {
   display: flex;
@@ -67,8 +58,7 @@
 .browser-consent input {
   margin-top: 4px;
 }
-.browser-start small,
-.browser-sites small {
+.browser-start small {
   font-size: 11px;
   line-height: 1.6;
   color: #858995;
@@ -137,6 +127,20 @@
 .browser-agent-badge {
   color: #dab685 !important;
 }
+.browser-session-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 8px 12px;
+  color: #92949f;
+  font-size: 11px;
+  line-height: 1.5;
+  border-bottom: 1px solid #30323a;
+}
+.browser-session-note small {
+  flex-basis: 100%;
+  font-size: inherit;
+}
 .browser-viewport {
   background: #0e1014;
   min-height: 280px;
@@ -180,17 +184,6 @@
 .browser-footer > span {
   margin-left: auto;
   color: #858995;
-}
-.browser-sites {
-  padding: 10px;
-  border-top: 1px solid #30323a;
-}
-.browser-sites code,
-.browser-sites small {
-  display: block;
-  margin-top: 7px;
-  font-size: 11px;
-  overflow-wrap: anywhere;
 }
 .browser-prompt {
   padding: 14px;

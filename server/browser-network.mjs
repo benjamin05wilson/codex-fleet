@@ -50,20 +50,20 @@ export function publicAddress(address) {
   );
 }
 
-// Exact origin checks apply to every HTTP request and HTTPS CONNECT tunnel.
+// Public domains are unrestricted; only the chosen local preview is permitted.
 // DNS is resolved and pinned before connecting; public names cannot rebind to LAN/loopback.
 export async function browserDestination(
   value,
-  origins,
+  localOrigins,
   forbiddenPorts,
   resolveHost = lookup,
 ) {
   const url = browserURL(value, forbiddenPorts);
-  if (!origins.includes(url.origin))
-    throw new Error("This origin is not approved for this browser.");
   const host = url.hostname.replace(/^\[|\]$/g, "");
   let address, family;
   if (["localhost", "127.0.0.1", "::1"].includes(host)) {
+    if (!localOrigins.includes(url.origin))
+      throw new Error("Only the selected local preview is accessible.");
     address = host === "::1" ? "::1" : "127.0.0.1";
     family = host === "::1" ? 6 : 4;
   } else {
@@ -80,7 +80,7 @@ export async function browserDestination(
   };
 }
 
-export async function createBrowserProxy(origins, forbiddenPorts) {
+export async function createBrowserProxy(localOrigins, forbiddenPorts) {
   const sockets = new Set();
   const track = (s) => {
     sockets.add(s);
@@ -92,7 +92,7 @@ export async function createBrowserProxy(origins, forbiddenPorts) {
   };
   const proxy = http.createServer(async (req, res) => {
     try {
-      const d = await browserDestination(req.url, origins, forbiddenPorts);
+      const d = await browserDestination(req.url, localOrigins, forbiddenPorts);
       if (d.url.protocol !== "http:") throw new Error("Use CONNECT for HTTPS.");
       const headers = { ...req.headers, host: d.url.host };
       delete headers["proxy-authorization"];
@@ -130,7 +130,7 @@ export async function createBrowserProxy(origins, forbiddenPorts) {
     try {
       const d = await browserDestination(
         "https://" + req.url,
-        origins,
+        localOrigins,
         forbiddenPorts,
       );
       if (client.destroyed) return;
@@ -151,12 +151,12 @@ export async function createBrowserProxy(origins, forbiddenPorts) {
       client.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     }
   });
-  // WebSocket HMR is allowed only to explicitly approved HTTP origins.
+  // WebSockets use the same public-network and selected-preview policy.
   proxy.on("upgrade", async (req, client, head) => {
     try {
       const d = await browserDestination(
         req.url.replace(/^ws:/, "http:"),
-        origins,
+        localOrigins,
         forbiddenPorts,
       );
       if (client.destroyed) return;

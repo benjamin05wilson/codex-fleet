@@ -598,7 +598,14 @@ function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
                 {isActive && (
                   <div className="working-message">
                     <span className="working-dot" />
-                    Codex is working<span>Events appear as they arrive</span>
+                    {events
+                      .filter(
+                        (e) =>
+                          e.type === "worker.phase" &&
+                          Date.parse(e.time) >= Date.parse(run.startedAt || 0),
+                      )
+                      .at(-1)?.data.phase || "Codex is working"}
+                    <span>Events appear as they arrive</span>
                   </div>
                 )}
               </>

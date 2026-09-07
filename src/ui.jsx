@@ -64,6 +64,9 @@ function setToken(value) {
 async function api(path, method = "GET", data) {
   return getClient().request(path, method, data);
 }
+function subscribeBrowserFrames(path, onFrame, onError) {
+  return getClient().subscribe(path, onFrame, onError);
+}
 const iconSize = 16;
 function getClientId() {
   let value = sessionStorage.getItem("fleet.client");
@@ -244,6 +247,7 @@ function Field({ label, hint, children }) {
 
 export {
   api,
+  subscribeBrowserFrames,
   setToken,
   activeStatuses,
   fmt,

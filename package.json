@@ -16,6 +16,7 @@
     "start": "node server/index.mjs",
     "postinstall": "node scripts/native-setup.mjs",
     "desktop": "npm run build && electron .",
+    "desktop:preview": "npm run build && FLEET_DESKTOP_TRIAL=1 electron .",
     "desktop:package": "npm run build && npm run desktop:icon && electron-builder --mac --dir",
     "desktop:icon": "swift scripts/icon.swift build/fleet.iconset && iconutil -c icns build/fleet.iconset -o build/fleet.icns",
     "fleet": "node cmd/fleet.mjs",
@@ -30,15 +31,16 @@
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
-    "agent-browser": "0.36.0",
     "lucide-react": "^0.468.0",
     "node-pty": "^1.1.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "ws": "8.21.3"
   },
   "devDependencies": {
+    "agent-browser": "0.36.0",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.7",
     "electron": "^44.2.0",

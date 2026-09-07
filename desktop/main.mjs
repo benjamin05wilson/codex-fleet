@@ -1,20 +1,35 @@
-import { app, BrowserWindow, session, dialog, ipcMain } from "electron";
+import {
+  app,
+  BrowserWindow,
+  WebContentsView,
+  session,
+  dialog,
+  ipcMain,
+} from "electron";
+import { createNativeBrowser } from "./native-browser.mjs";
 import { spawn, execFileSync } from "node:child_process";
 import { join, dirname, isAbsolute } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   mkdirSync,
   openSync,
   closeSync,
   readFileSync,
   writeFileSync,
+  mkdtempSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 const root = app.isPackaged
   ? join(process.resourcesPath, "runtime")
   : join(dirname(fileURLToPath(import.meta.url)), "..");
 const url = "http://127.0.0.1:" + Number(process.env.FLEET_PORT || 4317);
 let window;
-app.setName("Fleet");
+let nativeBrowser;
+app.commandLine.appendSwitch("disable-quic");
+const trial = process.env.FLEET_DESKTOP_TRIAL === "1";
+app.setName(trial ? "Fleet Native Preview" : "Fleet");
+if (trial)
+  app.setPath("userData", mkdtempSync(join(tmpdir(), "fleet-native-desktop-")));
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on("second-instance", () => {
@@ -44,6 +59,10 @@ else {
         });
         return result.canceled ? null : result.filePaths[0] || null;
       });
+      ipcMain.handle("fleet:native-browser", (event, input) => {
+        if (!nativeBrowser) throw new Error("Native browser is unavailable.");
+        return nativeBrowser.handle(event, input);
+      });
       async function openWindow() {
         try {
           const preferencesPath = join(
@@ -60,6 +79,10 @@ else {
             .then((r) => r.ok)
             .catch(() => false);
           if (!ready) {
+            if (trial)
+              throw new Error(
+                "Open your normal Fleet app first. The native preview reuses its running service and never creates a new workspace.",
+              );
             const candidates = [
               process.env.FLEET_NODE_BIN,
               join(app.getPath("home"), ".local/node/bin/node"),
@@ -160,10 +183,49 @@ else {
             },
           });
           window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+          if (trial) {
+            window.setTitle("Fleet · Native Preview");
+            window.webContents.on("page-title-updated", (event) =>
+              event.preventDefault(),
+            );
+          }
+          // Packaged server modules live in Resources/runtime, not app.asar.
+          const { browserURL, createBrowserProxy } = await import(
+            pathToFileURL(join(root, "server/browser-network.mjs")).href
+          );
+          const owner = createNativeBrowser({
+            browserURL,
+            proxyFactory: createBrowserProxy,
+            window,
+            origin: url,
+            WebContentsView,
+            session,
+            validateProject: async (id) => {
+              const response = await fetch(url + "/api/state");
+              if (!response.ok) return false;
+              return (await response.json()).projects.some(
+                (project) => project.id === id,
+              );
+            },
+          });
+          nativeBrowser = owner;
+          window.on("closed", () => {
+            if (nativeBrowser === owner) nativeBrowser = null;
+            owner.close().catch(() => {});
+          });
           window.webContents.on("will-navigate", (event, target) => {
             if (new URL(target).origin !== url) event.preventDefault();
           });
-          await window.loadURL(url);
+          const initial = new URL(url);
+          if (trial && process.env.FLEET_NATIVE_PROJECT) {
+            initial.searchParams.set(
+              "nativePreview",
+              process.env.FLEET_NATIVE_PROJECT,
+            );
+            initial.searchParams.set("url", process.env.FLEET_NATIVE_URL || "");
+          }
+          await window.loadURL(initial.href);
+          if (trial) console.log("Fleet Native Preview ready");
         } catch (error) {
           dialog.showErrorBox("Fleet could not open", error.message);
           app.quit();

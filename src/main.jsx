@@ -91,6 +91,40 @@ import { HomePage } from "./features/home.jsx";
 import { ProjectNavigation } from "./features/project-navigation.jsx";
 import { TerminalView } from "./features/terminal.jsx";
 import { WelcomeSetup } from "./features/welcome-setup.jsx";
+import { NativeBrowser } from "./features/native-browser.jsx";
+import "./browser.css";
+function NativePreviewPage() {
+  const [project, setProject] = useState(null),
+    [error, setError] = useState("");
+  const query = new URLSearchParams(location.search);
+  useEffect(() => {
+    let alive = true;
+    api("/state")
+      .then((state) => {
+        if (!alive) return;
+        const project = state.projects.find(
+          (p) => p.id === query.get("nativePreview"),
+        );
+        if (project) setProject(project);
+        else setError("This project is unavailable.");
+      })
+      .catch((e) => {
+        if (alive) setError(e.message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return project ? (
+    <NativeBrowser
+      project={project}
+      initialURL={query.get("url") || ""}
+      onBack={() => location.assign(location.origin)}
+    />
+  ) : (
+    <p role="status">{error || "Loading native preview…"}</p>
+  );
+}
 function App() {
   const [state, setState] = useState(null);
   const [showExamples, setShowExamples] = useState(
@@ -1002,4 +1036,12 @@ function Welcome({ onAdd, onNew }) {
 }
 export { App, MD, RunDialog, MissionDialog, Sentinel, BrainView };
 const rootElement = document.getElementById("root");
-if (rootElement) createRoot(rootElement).render(<App />);
+if (rootElement)
+  createRoot(rootElement).render(
+    window.fleetDesktop?.nativeBrowser &&
+      new URLSearchParams(location.search).has("nativePreview") ? (
+      <NativePreviewPage />
+    ) : (
+      <App />
+    ),
+  );
