@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 // Desktop-only, opt-in rendering trial. Remote pages get neither a preload nor
-// IPC. There is deliberately no agent/CDP connection to this manual-only view.
+// IPC. A main-process bridge shares only this native page with project agents.
 export function createNativeBrowser({
   window,
   origin,
@@ -9,11 +9,13 @@ export function createNativeBrowser({
   session,
   browserURL,
   proxyFactory,
+  connectAgent,
   validateProject = async () => true,
 }) {
   let current,
     opening = false,
-    disposed = false;
+    disposed = false,
+    selection = 0;
   const forbidden = [4317, Number(new URL(origin).port)];
   const trusted = (event) => {
     if (
@@ -42,6 +44,8 @@ export function createNativeBrowser({
     loading: c.view.webContents.isLoading(),
     canBack: c.view.webContents.navigationHistory.canGoBack(),
     canForward: c.view.webContents.navigationHistory.canGoForward(),
+    agentConnected: !!c.agentConnected,
+    agentError: c.agentError || "",
   });
   const visibility = (c, visible) => {
     if (c.visible === visible) return;
@@ -59,6 +63,7 @@ export function createNativeBrowser({
     if (!window.isDestroyed()) window.contentView.removeChildView(c.view);
     if (!c.view.webContents.isDestroyed())
       c.view.webContents.close({ waitForBeforeUnload: false });
+    await c.disconnectAgent?.();
     await c.proxy.close();
     await c.partition.closeAllConnections();
     await Promise.all([
@@ -66,9 +71,10 @@ export function createNativeBrowser({
       c.partition.clearCache(),
     ]);
   };
-  const start = async (input) => {
+  const start = async (input, deferNavigation = false) => {
     if (opening || current)
       throw new Error("Close the existing native preview first.");
+    selection++;
     opening = true;
     let proxy, partition, view;
     try {
@@ -131,6 +137,7 @@ export function createNativeBrowser({
       });
       const c = {
         id: randomUUID(),
+        projectId: input.projectId,
         view,
         proxy,
         partition,
@@ -141,6 +148,17 @@ export function createNativeBrowser({
       view.setVisible(false);
       window.contentView.addChildView(view);
       const web = view.webContents;
+      if (connectAgent)
+        c.disconnectAgent = connectAgent({
+          web,
+          projectId: input.projectId,
+          nativeId: c.id,
+          forbiddenPorts: [...forbidden, proxy.port],
+          onStatus: ({ connected, error }) => {
+            c.agentConnected = connected;
+            c.agentError = error;
+          },
+        });
       web.setWebRTCIPHandlingPolicy("disable_non_proxied_udp");
       web.setWindowOpenHandler(() => {
         c.error =
@@ -170,7 +188,7 @@ export function createNativeBrowser({
           c.error = `Could not load the page (${code}: ${description}).`;
       });
       // Return promptly, so renderer can place the view while navigation runs.
-      web.loadURL(url.href).catch(() => {});
+      if (!deferNavigation) web.loadURL(url.href).catch(() => {});
       c.lease = setTimeout(hide, 2000);
       return state(c);
     } catch (error) {
@@ -192,8 +210,45 @@ export function createNativeBrowser({
   window.webContents.on("render-process-gone", hide);
   window.on("hide", hide);
   return {
+    // Main-process only: the broker derives project/run from the active chat's
+    // capability. This is not an IPC action that a website or model can invoke.
+    async openForAgent({ projectId, url }) {
+      browserURL(url, forbidden);
+      if (disposed || !(await validateProject(projectId)))
+        throw new Error("Choose an existing project in Fleet Desktop.");
+      if (opening)
+        throw new Error("Browser is opening. Retry navigate shortly.");
+      if (current && current.projectId !== projectId) await close();
+      if (!current) await start({ projectId, url, approved: true }, true);
+      const c = current;
+      // Registration must finish before the broker dispatches the navigation.
+      // Start with an empty native view, so the requested URL loads only once.
+      for (let i = 0; i < 250; i++) {
+        if (disposed || current !== c || c.view.webContents.isDestroyed())
+          throw new Error("Browser closed while opening.");
+        if (c.agentConnected) return state(c);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error(
+        c.agentError ||
+          "Browser agent connection is not ready. Retry navigate.",
+      );
+    },
     async handle(event, input) {
       trusted(event);
+      if (input?.action === "restore") {
+        const revision = ++selection;
+        if (
+          typeof input.projectId !== "string" ||
+          !(await validateProject(input.projectId))
+        )
+          throw new Error("Choose an existing project.");
+        if (revision !== selection || disposed) return null;
+        if (current && current.projectId !== input.projectId) await close();
+        return current && !current.view.webContents.isDestroyed()
+          ? state(current)
+          : null;
+      }
       if (input?.action === "start") return start(input);
       // A renderer cleanup may arrive after its close reply. Hiding an old
       // surface is harmless and must never affect a subsequently opened one.

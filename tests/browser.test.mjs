@@ -18,6 +18,7 @@ import {
 import { browserCommand, Browsers } from "../server/browsers.mjs";
 import {
   browserMcpConfig,
+  browserStartupConfig,
   browserInstructions,
   verifyBrowserTool,
   browserTool,
@@ -715,12 +716,9 @@ test("typing and scrolling avoid redundant native URL lookups", async (t) => {
     ["scroll", "down", "400"],
   ]);
 });
-test("browser routing preserves tabs and missing tools fail closed", async () => {
-  assert.match(browserTool.description, /newTab/);
-  assert.match(
-    browserInstructions(false),
-    /Chat browser control is not connected yet/,
-  );
+test("browser routing shares native access automatically and missing tools fail closed", async () => {
+  assert.match(browserTool.description, /same native project browser/);
+  assert.match(browserInstructions(false), /This chat has no browser tool/);
   assert.match(browserInstructions(true), /never fall back/);
   const requests = [];
   await verifyBrowserTool(
@@ -763,6 +761,26 @@ test("MCP connection override carries only the dedicated scoped adapter, without
   assert.equal(result.dynamicTools, undefined);
   assert.equal(result.config["mcp_servers.fleet_browser"].required, true);
 });
+
+test("browser startup config supports resumed worker processes without putting capabilities in argv", () => {
+  const config = browserStartupConfig({
+    node: "node",
+    script: "/fixture.mjs",
+    url: "http://127.0.0.1:1/api/browser-agent",
+    token: "private-fixture-token",
+  });
+  assert.equal(config.env.FLEET_BROWSER_CAPABILITY, "private-fixture-token");
+  assert.equal(
+    config.args.some((arg) => arg.includes("private-fixture-token")),
+    false,
+  );
+  assert.ok(
+    config.args.includes(
+      'mcp_servers.fleet_browser.default_tools_approval_mode="auto"',
+    ),
+  );
+  assert.deepEqual(browserStartupConfig(null), { args: [], env: {} });
+});
 test("worker connects the shared browser before fresh and resumed fixture turns", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "fleet-worker-browser-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -802,7 +820,12 @@ test("worker connects the shared browser before fresh and resumed fixture turns"
       true,
     );
     assert.equal(policy.thread.config["mcp_servers.cua_repl"].enabled, false);
-    assert.match(policy.thread.developerInstructions, /newTab directly/);
+    assert.match(policy.thread.developerInstructions, /automatically shared/);
+    assert.equal(
+      policy.thread.config["mcp_servers.fleet_browser"]
+        .default_tools_approval_mode,
+      "auto",
+    );
     if (threadId) assert.equal(policy.thread.threadId, threadId);
     const events = (await readFile(join(directory, "events.jsonl"), "utf8"))
       .trim()

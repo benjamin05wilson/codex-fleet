@@ -833,6 +833,82 @@ test("Home is the startup view and Continue restores the last conversation witho
     request.mock.calls.some(([, options]) => options?.method === "POST"),
   ).toBe(false);
 });
+test("desktop agent browser requests reveal the right chat from Home and reopen its closed tool panel", async () => {
+  let requested;
+  const unsubscribe = vi.fn();
+  window.fleetDesktop = {
+    onBrowserRequested: (callback) => {
+      requested = callback;
+      return unsubscribe;
+    },
+    nativeBrowser: vi.fn(async () => null),
+  };
+  const project = { id: "auto", name: "Auto", path: "/auto" };
+  const run = {
+    id: "auto-chat",
+    projectId: project.id,
+    title: "Browser task",
+    status: "review",
+    prompt: "Open a site",
+    files: [],
+    scopes: [],
+    dependencies: [],
+    usage: {},
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url) => ({
+      ok: true,
+      json: async () =>
+        url === "/api/state"
+          ? { ...emptyState, projects: [project], runs: [run] }
+          : { ...run, events: [] },
+    })),
+  );
+  try {
+    const app = render(<App />);
+    await screen.findByRole("heading", { name: "Your workspace" });
+    reactAct(() =>
+      requested({ id: "bad", projectId: "different", runId: run.id }),
+    );
+    expect(
+      screen.queryByRole("region", { name: "Project browser" }),
+    ).toBeNull();
+    reactAct(() =>
+      requested({ id: "first", projectId: project.id, runId: run.id }),
+    );
+    await screen.findByRole("region", { name: "Project browser" });
+    const tools = screen.getByRole("complementary", { name: "Session tools" });
+    expect(tools.querySelectorAll("header")).toHaveLength(1);
+    expect(within(tools).getAllByText("Browser", { exact: true })).toHaveLength(
+      1,
+    );
+    expect(screen.getByRole("heading", { name: "Browser task" })).toBeTruthy();
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "Close session tool" }));
+    expect(
+      screen.queryByRole("region", { name: "Project browser" }),
+    ).toBeNull();
+    reactAct(() =>
+      requested({ id: "second", projectId: project.id, runId: run.id }),
+    );
+    await screen.findByRole("region", { name: "Project browser" });
+    expect(window.fleetDesktop.nativeBrowser).toHaveBeenCalledWith({
+      action: "restore",
+      projectId: project.id,
+    });
+    expect(
+      window.fleetDesktop.nativeBrowser.mock.calls.some(
+        ([input]) => input.action === "start",
+      ),
+    ).toBe(false);
+    app.unmount();
+    expect(unsubscribe).toHaveBeenCalled();
+  } finally {
+    delete window.fleetDesktop;
+  }
+});
 test("horizontal project navigation keeps Home and switches sidebar scope without losing drafts", async () => {
   const user = userEvent.setup();
   const projects = [

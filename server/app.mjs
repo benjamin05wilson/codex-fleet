@@ -27,15 +27,15 @@ import { Workflows, templates } from "./workflows.mjs";
 import { Teams, teamRoles, teamDefaults } from "./teams.mjs";
 import { searchWorkspace, previewFile } from "./search.mjs";
 import { onboardingSettings, saveOnboarding } from "./onboarding.mjs";
-import { NativeOnlyBrowsers } from "./native-only-browsers.mjs";
+import { NativeBrowserBroker } from "./native-browser-broker.mjs";
 
 const exec = promisify(execFile);
-async function body(req) {
+async function body(req, maxBytes = 100_000) {
   if (req.fleetBody !== undefined) return req.fleetBody;
   let text = "";
   for await (const chunk of req) {
     text += chunk;
-    if (text.length > 100_000)
+    if (text.length > maxBytes)
       throw Object.assign(new Error("Request too large"), { status: 413 });
   }
   try {
@@ -51,7 +51,7 @@ export async function createApp({
   concurrency = 3,
   transport = "app-server",
   browserOptions,
-  browserFactory = () => new NativeOnlyBrowsers(),
+  browserFactory = (engine) => new NativeBrowserBroker(engine),
 }) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const store = new Store(join(dataDir, "fleet.sqlite"));
@@ -248,6 +248,32 @@ export async function createApp({
       );
       const path = url.pathname;
       if (path.startsWith("/api/")) {
+        const nativeMatch = path.match(
+          /^\/api\/native-browser\/(register|launcher-register|next|result|close)$/,
+        );
+        if (nativeMatch) {
+          if (req.method !== "POST" || req.headers["x-fleet-token"] !== csrf) {
+            send({ error: "Native desktop authentication required." }, 403);
+            return;
+          }
+          const action = nativeMatch[1];
+          const input = await body(
+            req,
+            action === "result" ? 12500000 : 100000,
+          );
+          if (action === "register") send(browsers.register(input));
+          if (action === "launcher-register")
+            send(browsers.registerLauncher(input));
+          if (action === "result") send(browsers.result(input.token, input));
+          if (action === "close") send(browsers.disconnect(input.token));
+          if (action === "next") {
+            const controller = new AbortController();
+            res.once("close", () => controller.abort());
+            const command = await browsers.next(input.token, controller.signal);
+            if (!res.destroyed) send(command);
+          }
+          return;
+        }
         if (path === "/api/browser-agent" && req.method === "POST") {
           send(
             await browsers.agent(
@@ -476,7 +502,8 @@ export async function createApp({
             browserAvailable: false,
             browserMode: "native",
             browserDesktopOnly: true,
-            browserAgentAvailable: false,
+            browserAgentAvailable: true,
+            browserAutoOpenAvailable: !!browsers.launcher,
             onboarding: onboardingSettings(store),
             projects: store.list("project"),
             runs,

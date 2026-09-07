@@ -58,13 +58,16 @@ const props = {
   initialURL: "https://example.com",
 };
 
-test("native preview is opt-in and explicitly manual, with no automatic browser start", async () => {
+test("opening advertises automatic shared access without a connect or takeover step", async () => {
   render(<NativeBrowser {...props} onBack={() => {}} />);
-  expect(screen.getByText(/Not connected to chats/)).toBeTruthy();
+  expect(screen.getByText(/You \+ project agents/)).toBeTruthy();
+  expect(
+    screen.queryByRole("button", { name: /connect|take control|approve/i }),
+  ).toBeNull();
   expect(screen.getByLabelText("Browser URL").value).toBe(
     "https://example.com",
   );
-  expect(invoke).not.toHaveBeenCalled();
+  expect(invoke.mock.calls.map(([input]) => input.action)).toEqual(["restore"]);
   fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
   await screen.findByLabelText("Native browser surface");
   expect(invoke).toHaveBeenCalledWith(
@@ -95,6 +98,51 @@ test("native preview is opt-in and explicitly manual, with no automatic browser 
         url: "https://example.org",
       }),
     ),
+  );
+});
+
+test("native view fills tall windows and the actual panel bottom without a gap or height cap", async () => {
+  vi.stubGlobal("innerHeight", 1600);
+  let bottom = 1500;
+  const view = render(
+    <div className="tool-scroll">
+      <NativeBrowser {...props} />
+    </div>,
+  );
+  view.container.querySelector(".tool-scroll").getBoundingClientRect = () => ({
+    bottom,
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
+  const surface = await screen.findByLabelText("Native browser surface");
+  await waitFor(() => expect(surface.style.height).toBe("1300px"));
+  await waitFor(() =>
+    expect(invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "layout",
+        visible: true,
+        bounds: { x: 10, y: 200, width: 800, height: 1300 },
+      }),
+    ),
+  );
+  bottom = 700;
+  fireEvent(window, new Event("resize"));
+  await waitFor(() => expect(surface.style.height).toBe("500px"));
+  bottom = 1800;
+  fireEvent(window, new Event("resize"));
+  await waitFor(() => expect(surface.style.height).toBe("1400px"));
+});
+
+test("one browser header keeps hide-panel separate from clearing the browser session", async () => {
+  const onClosePanel = vi.fn();
+  const view = render(<NativeBrowser {...props} onClosePanel={onClosePanel} />);
+  fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
+  await screen.findByLabelText("Native browser surface");
+  expect(view.container.querySelectorAll("header")).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "Close browser" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Close session tool" }));
+  expect(onClosePanel).toHaveBeenCalledOnce();
+  expect(invoke.mock.calls.some(([input]) => input.action === "close")).toBe(
+    false,
   );
 });
 
@@ -174,11 +222,14 @@ test("native startup failure is reported without any alternative browser request
     "Native renderer unavailable",
   );
   expect(fetch).not.toHaveBeenCalled();
-  expect(invoke).toHaveBeenCalledTimes(1);
+  expect(invoke.mock.calls.map(([input]) => input.action)).toEqual([
+    "restore",
+    "start",
+  ]);
   expect(screen.getByRole("button", { name: "Open browser" })).toBeTruthy();
 });
 
-test("switching projects closes the old native session without auto-starting another", async () => {
+test("switching projects hides the old surface and selects the new native project without auto-starting", async () => {
   const view = render(
     <ProjectBrowser
       project={props.project}
@@ -189,10 +240,39 @@ test("switching projects closes the old native session without auto-starting ano
   await screen.findByLabelText("Native browser surface");
   view.rerender(<ProjectBrowser project={{ id: "project-b" }} />);
   await waitFor(() =>
-    expect(invoke).toHaveBeenCalledWith({ action: "close", id: "native-one" }),
+    expect(invoke).toHaveBeenCalledWith({
+      action: "restore",
+      projectId: "project-b",
+    }),
   );
   expect(screen.getByLabelText("Browser URL").value).toBe("");
   expect(invoke.mock.calls.filter(([v]) => v.action === "start")).toHaveLength(
     1,
   );
+});
+
+test("switching tools restores the existing shared page without starting or closing it", async () => {
+  const view = render(
+    <ProjectBrowser
+      project={props.project}
+      run={{ preview: { url: props.initialURL } }}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
+  await screen.findByLabelText("Native browser surface");
+  view.unmount();
+  expect(invoke.mock.calls.some(([input]) => input.action === "close")).toBe(
+    false,
+  );
+  invoke.mockImplementation(async (input) =>
+    ["restore", "state"].includes(input.action)
+      ? { id: "native-one", url: props.initialURL, agentConnected: true }
+      : undefined,
+  );
+  render(<ProjectBrowser project={props.project} />);
+  await screen.findByLabelText("Native browser surface");
+  expect(screen.getByText("You + agents · Live")).toBeTruthy();
+  expect(
+    invoke.mock.calls.filter(([input]) => input.action === "start"),
+  ).toHaveLength(1);
 });

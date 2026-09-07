@@ -28,7 +28,7 @@ let seq = 0,
   turnId,
   threadId,
   interrupted = false;
-const client = new CodexClient(config.bin, config.run.worktree);
+const client = new CodexClient(config.bin, config.run.worktree, config.browser);
 const append = (event) =>
   appendFileSync(
     join(directory, "events.jsonl"),

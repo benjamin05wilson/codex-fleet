@@ -15,12 +15,13 @@ if (!process.argv.includes("--run")) {
   process.exit(0);
 }
 const cwd = await mkdtemp(join(tmpdir(), "fleet-browser-tools-"));
-const browser = browserMcpConfig({
+const connection = {
   node: process.execPath,
   script: fileURLToPath(new URL("../server/browser-mcp.mjs", import.meta.url)),
   url: "http://127.0.0.1:1/unused-no-tool-execution",
   token: "test-only-no-broker-capability",
-});
+};
+const browser = browserMcpConfig(connection);
 const options = {
   cwd,
   approvalPolicy: "never",
@@ -34,10 +35,15 @@ const options = {
     },
   },
 };
-let client = new CodexClient(process.env.FLEET_CODEX_BIN || "codex", cwd);
+let client = new CodexClient(
+  process.env.FLEET_CODEX_BIN || "codex",
+  cwd,
+  connection,
+);
 let threadId;
 try {
   await client.connect();
+  await verifyBrowserTool(client);
   const first = await client.request("thread/start", {
     ...options,
     ephemeral: true,
@@ -45,7 +51,7 @@ try {
   threadId = first.thread.id;
   await verifyBrowserTool(client, threadId);
   console.log(
-    "PASS: installed Codex discovers fleet_browser before a model turn. No model calls; persisted-thread resume is covered only by fixtures.",
+    "PASS: installed Codex discovers fleet_browser in worker startup configuration and a new thread before any model turn. No model calls; persisted-thread resume is covered only by fixtures.",
   );
 } finally {
   client.close();

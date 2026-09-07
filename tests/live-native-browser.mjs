@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 if (!process.argv.includes("--run")) {
   console.log(
     "Use --run for an isolated native desktop browser trial; --public adds Shopify.",
@@ -15,6 +16,13 @@ if (!process.argv.includes("--run")) {
 } else if (!process.versions.electron) {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
+  let agentFixture;
+  if (process.argv.includes("--shared")) {
+    const { createNativeAgentFixture } =
+      await import("./native-agent-fixture.mjs");
+    agentFixture = await createNativeAgentFixture();
+    Object.assign(env, agentFixture.env);
+  }
   if (process.argv.includes("--ui")) {
     const { build } = await import("vite");
     env.FLEET_NATIVE_UI_DIR = await mkdtemp(join(tmpdir(), "fleet-native-ui-"));
@@ -40,6 +48,7 @@ if (!process.argv.includes("--run")) {
   process.exitCode = await new Promise((resolve) =>
     child.once("exit", (code) => resolve(code ?? 1)),
   );
+  await agentFixture?.close();
 } else {
   runNative().catch((error) => {
     console.error(error);
@@ -50,6 +59,12 @@ async function runNative() {
   const { app, BrowserWindow, WebContentsView, session, ipcMain } =
     await import("electron");
   const { createNativeBrowser } = await import("../desktop/native-browser.mjs");
+  const { createNativePageAgent: makePageAgent } =
+    await import("../desktop/native-page-agent.mjs");
+  const { connectNativeAgent: connectAgent } =
+    await import("../desktop/native-agent-bridge.mjs");
+  const { validateNativeAction: validateAction } =
+    await import("../shared/native-browser-actions.mjs");
   const { browserURL, createBrowserProxy } =
     await import("../server/browser-network.mjs");
   const directory = await mkdtemp(join(tmpdir(), "fleet-native-trial-"));
@@ -110,9 +125,12 @@ async function runNative() {
     );
   });
   await new Promise((r) => shell.listen(0, "127.0.0.1", r));
-  const origin = `http://127.0.0.1:${shell.address().port}`,
+  const origin = process.argv.includes("--full-app")
+      ? process.env.FLEET_SHARED_TEST_ORIGIN
+      : `http://127.0.0.1:${shell.address().port}`,
     pageURL = `http://127.0.0.1:${page.address().port}`;
   const window = new BrowserWindow({
+    enableLargerThanScreen: process.argv.includes("--full-app"),
     width: 1280,
     height: 920,
     show: true,
@@ -139,6 +157,30 @@ async function runNative() {
   const native = createNativeBrowser({
     browserURL,
     proxyFactory: createBrowserProxy,
+    ...(process.argv.includes("--shared")
+      ? {
+          connectAgent: (details) => {
+            const agent = makePageAgent({
+              ...details,
+              forbiddenPorts: [
+                ...details.forbiddenPorts,
+                Number(new URL(process.env.FLEET_SHARED_TEST_ORIGIN).port),
+              ],
+              browserURL,
+              validateAction,
+            });
+            const disconnect = connectAgent({
+              ...details,
+              origin: process.env.FLEET_SHARED_TEST_ORIGIN,
+              execute: (input) => agent.execute(input),
+            });
+            return async () => {
+              agent.close();
+              await disconnect();
+            };
+          },
+        }
+      : {}),
     window,
     origin,
     WebContentsView: ObservedView,
@@ -149,7 +191,7 @@ async function runNative() {
     sender: window.webContents,
     senderFrame: window.webContents.mainFrame,
   };
-  let id, lease;
+  let id, lease, disconnectLauncher;
   ipcMain.handle("fleet:native-browser", async (event, input) => {
     const result = await native.handle(event, input);
     if (input.action === "start") id = result.id;
@@ -165,15 +207,47 @@ async function runNative() {
     throw Error("Native trial timed out");
   };
   try {
+    if (process.argv.includes("--auto-open")) {
+      assert.ok(
+        process.argv.includes("--shared") && process.argv.includes("--ui"),
+      );
+      let connected = false;
+      disconnectLauncher = connectAgent({
+        origin: process.env.FLEET_SHARED_TEST_ORIGIN,
+        nativeId: randomUUID(),
+        registration: "launcher-register",
+        onStatus: (status) => {
+          connected = status.connected;
+        },
+        execute: async (input) => {
+          // Include the isolated daemon in the fixture's forbidden ports too.
+          browserURL(input.url, [
+            Number(new URL(process.env.FLEET_SHARED_TEST_ORIGIN).port),
+          ]);
+          const result = await native.openForAgent(input);
+          id = result.id;
+          window.webContents.send("fleet:browser-requested", {
+            ...input,
+            id: randomUUID(),
+          });
+          return { opened: true };
+        },
+      });
+      await waitFor(() => connected);
+    }
     if (process.argv.includes("--ui")) {
       await window.loadURL(
-        origin +
-          "/tests/fixtures/native-browser.html?url=" +
-          encodeURIComponent(pageURL),
+        process.argv.includes("--full-app")
+          ? origin
+          : origin +
+              "/tests/fixtures/native-browser.html?url=" +
+              encodeURIComponent(pageURL),
       );
       await waitFor(() =>
         window.webContents.executeJavaScript(
-          "Boolean(document.querySelector('button[type=submit]'))",
+          process.argv.includes("--full-app")
+            ? "Boolean(document.querySelector('.home-page')) || document.body.textContent.includes('Your workspace')"
+            : "Boolean(document.querySelector('button[type=submit]'))",
         ),
       );
       assert.equal(
@@ -181,9 +255,21 @@ async function runNative() {
         undefined,
         "React must not auto-start the native view",
       );
-      await window.webContents.executeJavaScript(
-        "document.querySelector('button[type=submit]').click()",
-      );
+      if (process.argv.includes("--auto-open")) {
+        const { withNativeBrowserTool } =
+          await import("./native-shared-checks.mjs");
+        await withNativeBrowserTool(async (call) => {
+          await call({ action: "navigate", url: pageURL });
+          assert.equal(childView.webContents.getURL(), pageURL + "/");
+        });
+        console.log(
+          "PASS: cold stdio MCP navigate creates the native browser and reveals the React panel without a user click.",
+        );
+      } else {
+        await window.webContents.executeJavaScript(
+          "document.querySelector('button[type=submit]').click()",
+        );
+      }
       await waitFor(() => childView?.getVisible());
       await waitFor(() =>
         childView.webContents.executeJavaScript(
@@ -197,11 +283,62 @@ async function runNative() {
         "undefined",
       );
       const before = childView.getBounds();
+      if (process.argv.includes("--full-app")) {
+        console.log(
+          await window.webContents.executeJavaScript(
+            `JSON.stringify({viewport:innerHeight,rects:Object.fromEntries(['.workspace-content','.run-detail','.session-panes','.tool-pane','.tool-scroll','.native-browser-surface'].map(s=>{const r=document.querySelector(s).getBoundingClientRect();return [s,{top:r.top,bottom:r.bottom,height:r.height}]}))})`,
+          ),
+        );
+        await writeFile(
+          join(directory, "full-app-layout.png"),
+          (await window.webContents.capturePage()).toPNG(),
+        );
+      }
+      assert.ok(
+        Math.abs(before.y + before.height - window.getContentSize()[1]) <= 1,
+        "Native browser must reach the bottom of the window",
+      );
+      if (process.argv.includes("--shared")) {
+        const { checkNativeSharing } =
+          await import("./native-shared-checks.mjs");
+        await checkNativeSharing({
+          web: childView.webContents,
+          action,
+          pageURL,
+          waitFor,
+        });
+      }
+      if (process.argv.includes("--full-app")) {
+        window.setContentSize(1600, 1400);
+        await waitFor(() => {
+          const bounds = childView.getBounds();
+          return (
+            bounds.height > 850 &&
+            Math.abs(bounds.y + bounds.height - window.getContentSize()[1]) <=
+              1 &&
+            childView.getVisible()
+          );
+        });
+        console.log(
+          "PASS: full Fleet browser fills a tall window beyond the former 850px cap.",
+        );
+        await writeFile(
+          join(directory, "full-app-tall.png"),
+          (await window.webContents.capturePage()).toPNG(),
+        );
+      }
       window.setSize(1100, 760);
       await waitFor(
         () =>
-          childView.getBounds().width < before.width && childView.getVisible(),
+          childView.getBounds().width !== before.width &&
+          childView.getVisible(),
       );
+      await waitFor(() => {
+        const bounds = childView.getBounds();
+        return (
+          Math.abs(bounds.y + bounds.height - window.getContentSize()[1]) <= 1
+        );
+      });
       await window.webContents.executeJavaScript(
         "Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Close browser').click()",
       );
@@ -289,6 +426,7 @@ async function runNative() {
       );
       window.focus();
       web.focus();
+      await waitFor(() => window.isFocused() && web.isFocused());
       web.sendInputEvent({
         type: "mouseWheel",
         x: 500,
@@ -368,6 +506,11 @@ async function runNative() {
           }),
         );
       }
+      if (process.argv.includes("--shared")) {
+        const { checkNativeSharing } =
+          await import("./native-shared-checks.mjs");
+        await checkNativeSharing({ web, action, pageURL, waitFor });
+      }
       const partition = web.session;
       assert.equal(
         partition.storagePath,
@@ -392,10 +535,27 @@ async function runNative() {
       );
     }
   } catch (e) {
+    if (process.argv.includes("--full-app"))
+      console.log(
+        JSON.stringify({
+          content: window.getContentSize(),
+          native: childView?.getBounds(),
+          visible: childView?.getVisible(),
+          dom: await window.webContents.executeJavaScript(
+            `({height:innerHeight,width:innerWidth,rects:Object.fromEntries(['.tool-pane','.tool-scroll','.native-browser-surface'].map(s=>{const el=document.querySelector(s),r=el?.getBoundingClientRect();return [s,r?{top:r.top,bottom:r.bottom,height:r.height,inline:el.style.height}:null]}))})`,
+          ),
+        }),
+      );
+    if (process.argv.includes("--full-app"))
+      await writeFile(
+        join(directory, "full-app-failure.png"),
+        (await window.webContents.capturePage()).toPNG(),
+      );
     console.error(e);
     process.exitCode = 1;
   } finally {
     clearInterval(lease);
+    await disconnectLauncher?.();
     await native.close();
     window.destroy();
     await Promise.all(

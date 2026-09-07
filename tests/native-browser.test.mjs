@@ -128,6 +128,40 @@ test("native preview accepts only the trusted main renderer, project and explici
   assert.equal(f.views.length, 0);
 });
 
+test("agent opener creates and reuses the native view without loading a URL twice", async (t) => {
+  const f = fixture(t, {
+    connectAgent: ({ onStatus }) => {
+      onStatus({ connected: true, error: "" });
+      return async () => {};
+    },
+  });
+  const input = { projectId: "project", url: "https://example.com" };
+  const first = await f.manager.openForAgent(input);
+  assert.equal(f.views.length, 1);
+  assert.equal(f.views[0].webContents.getURL(), "");
+  const restored = await f.manager.handle(f.event, {
+    action: "restore",
+    projectId: "project",
+  });
+  assert.equal(restored.id, first.id);
+  const second = await f.manager.openForAgent(input);
+  assert.equal(second.id, first.id);
+  assert.equal(f.views.length, 1);
+  await assert.rejects(
+    f.manager.openForAgent({ ...input, url: "http://127.0.0.1:4317" }),
+    /internal/,
+  );
+  await assert.rejects(
+    f.manager.openForAgent({ ...input, url: "file:///etc/passwd" }),
+    /HTTP/,
+  );
+  await assert.rejects(
+    f.manager.openForAgent({ ...input, projectId: "unknown" }),
+    /project/,
+  );
+  assert.equal(f.views.length, 1);
+});
+
 test("native view uses a fresh protected session and exposes no preload or agent channel", async (t) => {
   const f = fixture(t),
     { id } = await f.start(),
@@ -287,4 +321,69 @@ test("concurrent starts and window closure during opening cannot leave an orphan
   assert.equal(f.proxies[0].closed, true);
   assert.equal(f.partitions[0].cleared, true);
   assert.equal(f.partitions[0].cacheCleared, true);
+});
+
+test("same-project restore retains the native page, while changing projects closes only the previous page", async (t) => {
+  const f = fixture(t, {
+    validateProject: async (id) => ["project", "second"].includes(id),
+  });
+  const started = await f.start();
+  assert.equal(
+    (
+      await f.manager.handle(f.event, {
+        action: "restore",
+        projectId: "project",
+      })
+    ).id,
+    started.id,
+  );
+  assert.equal(f.views[0].webContents.destroyed, undefined);
+  assert.equal(
+    await f.manager.handle(f.event, { action: "restore", projectId: "second" }),
+    null,
+  );
+  assert.equal(f.views[0].webContents.destroyed, true);
+  assert.equal(f.partitions[0].cacheCleared, true);
+});
+
+test("late restore from an unmounted project cannot close the newly selected project's browser", async (t) => {
+  const waits = [];
+  let deferred = false;
+  const f = fixture(t, {
+    validateProject: () =>
+      deferred
+        ? new Promise((resolve) => waits.push(resolve))
+        : Promise.resolve(true),
+  });
+  await f.start();
+  deferred = true;
+  const old = f.manager.handle(f.event, {
+    action: "restore",
+    projectId: "project",
+  });
+  const recent = f.manager.handle(f.event, {
+    action: "restore",
+    projectId: "second",
+  });
+  waits[1](true);
+  await recent;
+  deferred = false;
+  const opened = await f.manager.handle(f.event, {
+    action: "start",
+    projectId: "second",
+    url: "https://example.com",
+    approved: true,
+  });
+  waits[0](true);
+  assert.equal(await old, null);
+  assert.equal(
+    (
+      await f.manager.handle(f.event, {
+        action: "restore",
+        projectId: "second",
+      })
+    ).id,
+    opened.id,
+  );
+  assert.equal(f.views[1].webContents.destroyed, undefined);
 });

@@ -1,17 +1,20 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { EventEmitter } from "node:events";
+import { browserStartupConfig } from "../shared/browser-tools.mjs";
 
 // Verified against the installed 0.153.2 schema; no experimental API opt-in.
 export class CodexClient extends EventEmitter {
-  constructor(bin = "codex", cwd = process.cwd()) {
+  constructor(bin = "codex", cwd = process.cwd(), browser = null) {
     super();
     this.bin = bin;
     this.cwd = cwd;
+    this.browser = browser;
     this.pending = new Map();
     this.sequence = 0;
   }
   async connect() {
+    const browser = browserStartupConfig(this.browser);
     const env = Object.fromEntries(
       ["PATH", "HOME", "USER", "TMPDIR", "CODEX_HOME"]
         .filter((k) => process.env[k])
@@ -25,10 +28,11 @@ export class CodexClient extends EventEmitter {
         "sandbox_workspace_write.network_access=false",
         "-c",
         'approval_policy="never"',
+        ...browser.args,
       ],
       {
         cwd: this.cwd,
-        env: { ...env, LANG: "en_US.UTF-8" },
+        env: { ...env, ...browser.env, LANG: "en_US.UTF-8" },
         stdio: ["pipe", "pipe", "pipe"],
       },
     );

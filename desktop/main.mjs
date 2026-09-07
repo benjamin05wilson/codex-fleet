@@ -7,6 +7,8 @@ import {
   ipcMain,
 } from "electron";
 import { createNativeBrowser } from "./native-browser.mjs";
+import { createNativePageAgent } from "./native-page-agent.mjs";
+import { connectNativeAgent } from "./native-agent-bridge.mjs";
 import { spawn, execFileSync } from "node:child_process";
 import { join, dirname, isAbsolute } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -19,6 +21,7 @@ import {
   mkdtempSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 const root = app.isPackaged
   ? join(process.resourcesPath, "runtime")
   : join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -193,9 +196,28 @@ else {
           const { browserURL, createBrowserProxy } = await import(
             pathToFileURL(join(root, "server/browser-network.mjs")).href
           );
+          const { validateNativeAction } = await import(
+            pathToFileURL(join(root, "shared/native-browser-actions.mjs")).href
+          );
           const owner = createNativeBrowser({
             browserURL,
             proxyFactory: createBrowserProxy,
+            connectAgent: (details) => {
+              const agent = createNativePageAgent({
+                ...details,
+                browserURL,
+                validateAction: validateNativeAction,
+              });
+              const disconnect = connectNativeAgent({
+                ...details,
+                origin: url,
+                execute: (input) => agent.execute(input),
+              });
+              return async () => {
+                agent.close();
+                await disconnect();
+              };
+            },
             window,
             origin: url,
             WebContentsView,
@@ -209,8 +231,10 @@ else {
             },
           });
           nativeBrowser = owner;
+          let disconnectLauncher;
           window.on("closed", () => {
             if (nativeBrowser === owner) nativeBrowser = null;
+            disconnectLauncher?.().catch(() => {});
             owner.close().catch(() => {});
           });
           window.webContents.on("will-navigate", (event, target) => {
@@ -225,6 +249,23 @@ else {
             initial.searchParams.set("url", process.env.FLEET_NATIVE_URL || "");
           }
           await window.loadURL(initial.href);
+          const desktopWindow = window;
+          disconnectLauncher = connectNativeAgent({
+            origin: url,
+            nativeId: randomUUID(),
+            registration: "launcher-register",
+            execute: async (input) => {
+              const result = await owner.openForAgent(input);
+              if (desktopWindow.isDestroyed())
+                throw new Error("Fleet window closed.");
+              desktopWindow.webContents.send("fleet:browser-requested", {
+                projectId: input.projectId,
+                runId: input.runId,
+                id: randomUUID(),
+              });
+              return { opened: true, nativeId: result.id };
+            },
+          });
           if (trial) console.log("Fleet Native Preview ready");
         } catch (error) {
           dialog.showErrorBox("Fleet could not open", error.message);

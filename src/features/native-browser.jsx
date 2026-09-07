@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, RefreshCw } from "lucide-react";
 
-export function NativeBrowser({ project, initialURL, onBack }) {
+export function NativeBrowser({ project, initialURL, onBack, onClosePanel }) {
   const [state, setState] = useState(null),
     [url, setUrl] = useState(initialURL || ""),
     [error, setError] = useState(""),
@@ -14,10 +14,23 @@ export function NativeBrowser({ project, initialURL, onBack }) {
   const invoke = (input) => window.fleetDesktop.nativeBrowser(input);
   useEffect(() => {
     alive.current = true;
+    invoke({ action: "restore", projectId: project.id })
+      .then((next) => {
+        if (alive.current && next && !session.current) {
+          session.current = next.id;
+          setState(next);
+          setUrl(next.url || "");
+        }
+      })
+      .catch((e) => {
+        if (alive.current) setError(e.message);
+      });
     return () => {
       alive.current = false;
       if (session.current)
-        invoke({ action: "close", id: session.current }).catch(() => {});
+        invoke({ action: "layout", id: session.current, visible: false }).catch(
+          () => {},
+        );
     };
   }, []);
   const action = async (action, extra = {}) => {
@@ -74,11 +87,16 @@ export function NativeBrowser({ project, initialURL, onBack }) {
     if (!state?.id || !host.current) return;
     let stopped = false,
       raf;
+    const panel = host.current.closest(".tool-scroll");
     const layout = () => {
       if (stopped) return;
       const element = host.current,
         r = element.getBoundingClientRect();
-      const height = Math.max(120, Math.min(850, innerHeight - r.top - 24));
+      const bottom = Math.min(
+        innerHeight,
+        panel ? panel.getBoundingClientRect().bottom : innerHeight,
+      );
+      const height = Math.max(0, bottom - r.top);
       if (Math.abs(r.height - height) > 1) {
         element.style.height = `${height}px`;
         schedule();
@@ -117,6 +135,7 @@ export function NativeBrowser({ project, initialURL, onBack }) {
     };
     const observer = new ResizeObserver(schedule);
     observer.observe(host.current);
+    if (panel) observer.observe(panel);
     const mutations = new MutationObserver(schedule);
     mutations.observe(document.body, { childList: true, subtree: true });
     window.addEventListener("resize", schedule);
@@ -143,14 +162,29 @@ export function NativeBrowser({ project, initialURL, onBack }) {
       className="project-browser native-preview"
       aria-label="Project browser"
     >
-      <div className="browser-controls">
+      <header className="browser-controls">
         <strong>Browser</strong>
-        <span>Manual only · Not connected to chats</span>
+        <span>
+          {!state
+            ? "You + project agents"
+            : state.agentConnected
+              ? "You + agents · Live"
+              : "Connecting agents…"}
+        </span>
         {state && (
           <button onClick={() => setClosing(true)}>Close browser</button>
         )}
         {!state && onBack && <button onClick={onBack}>Back to Fleet</button>}
-      </div>
+        {onClosePanel && (
+          <button
+            aria-label="Close session tool"
+            title="Hide browser panel"
+            onClick={onClosePanel}
+          >
+            ×
+          </button>
+        )}
+      </header>
       {!state ? (
         <form
           className="browser-start"
@@ -174,9 +208,12 @@ export function NativeBrowser({ project, initialURL, onBack }) {
             />
           </label>
           <small>
-            Manual browsing only; chat controls are not connected yet.
-            Permissions, downloads and pop-up windows are disabled. Closing the
-            browser clears its cookies, cache and page state.
+            You and this project’s coding agents share this page automatically.
+            Ask a chat to open a website and it opens this panel for you. No
+            control switching or browser-action approval prompts. Permissions,
+            downloads and pop-up windows are disabled. Closing the browser or
+            opening another project’s browser clears its session. Switching chat
+            tools keeps this same browser open.
           </small>
           <button type="submit" disabled={busy}>
             {busy ? "Opening…" : "Open browser"}
@@ -265,6 +302,12 @@ export function NativeBrowser({ project, initialURL, onBack }) {
         </>
       )}
       {(error || state?.error) && <p role="alert">{error || state.error}</p>}
+      {state?.agentError && (
+        <p role="status">
+          Agent connection: {state.agentError} Manual browsing remains available
+          in this same page.
+        </p>
+      )}
     </section>
   );
 }

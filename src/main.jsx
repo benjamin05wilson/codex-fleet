@@ -127,6 +127,30 @@ function NativePreviewPage() {
 }
 function App() {
   const [state, setState] = useState(null);
+  const [browserRequest, setBrowserRequest] = useState(null);
+  const latestState = useRef(null);
+  latestState.current = state;
+  useEffect(
+    () =>
+      window.fleetDesktop?.onBrowserRequested?.((request) => {
+        const current = latestState.current;
+        const run = current?.runs.find(
+          (r) =>
+            r.id === request.runId &&
+            r.projectId === request.projectId &&
+            !r.deletedAt,
+        );
+        if (!run || !current.projects.some((p) => p.id === request.projectId))
+          return;
+        localStorage.setItem(`fleet.tool.${run.id}`, "browser");
+        setProjectId(request.projectId);
+        setSelected(run.id);
+        setAllProjects(false);
+        setView("sessions");
+        setBrowserRequest(request);
+      }),
+    [],
+  );
   const [showExamples, setShowExamples] = useState(
     () => localStorage.getItem("fleet.show-examples") === "true",
   );
@@ -695,6 +719,7 @@ function App() {
                         ) : (
                           <RunDetail
                             key={selected}
+                            browserRequest={browserRequest}
                             runId={selected}
                             project={project}
                             state={state}

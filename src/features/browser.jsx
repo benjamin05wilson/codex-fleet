@@ -4,10 +4,23 @@ import "../browser.css";
 
 // Native rendering is the only product browser. Never start a streamed browser
 // when the desktop bridge is missing or when native startup fails.
-export function ProjectBrowser({ project, run }) {
+export function ProjectBrowser({ project, run, onClosePanel }) {
   if (typeof window.fleetDesktop?.nativeBrowser !== "function")
     return (
       <section className="project-browser" aria-label="Project browser">
+        <header className="browser-controls">
+          <strong>Browser</strong>
+          <span>Desktop required</span>
+          {onClosePanel && (
+            <button
+              aria-label="Close session tool"
+              title="Hide browser panel"
+              onClick={onClosePanel}
+            >
+              ×
+            </button>
+          )}
+        </header>
         <h3>Open Fleet Desktop to browse</h3>
         <p>
           Fleet’s browser renders directly in the desktop app. If you are
@@ -21,6 +34,7 @@ export function ProjectBrowser({ project, run }) {
     <NativeBrowser
       key={project.id}
       project={project}
+      onClosePanel={onClosePanel}
       initialURL={run?.preview?.url || ""}
     />
   );

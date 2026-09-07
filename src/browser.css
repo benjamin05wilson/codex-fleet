@@ -7,7 +7,9 @@
 }
 .native-browser-surface {
   width: 100%;
-  height: clamp(240px, 62vh, 850px);
+  /* The native layout measures the remaining panel space, without a height cap. */
+  height: 0;
+  flex-shrink: 0;
   background: #17191e;
 }
 .browser-start {
