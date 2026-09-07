@@ -29,6 +29,7 @@ import { searchWorkspace, previewFile } from "./search.mjs";
 import { onboardingSettings, saveOnboarding } from "./onboarding.mjs";
 import { NativeBrowserBroker } from "./native-browser-broker.mjs";
 import { commandInvocation } from "../shared/platform.mjs";
+import { CodexAuth } from "./auth.mjs";
 
 const exec = promisify(execFile);
 async function body(req, maxBytes = 100_000) {
@@ -53,6 +54,7 @@ export async function createApp({
   transport = "app-server",
   browserOptions,
   browserFactory = (engine) => new NativeBrowserBroker(engine),
+  authFactory = (bin, cwd, options) => new CodexAuth(bin, cwd, options),
 }) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const store = new Store(join(dataDir, "fleet.sqlite"));
@@ -62,6 +64,24 @@ export async function createApp({
     concurrency,
     transport,
   });
+  const auth = authFactory(engine.bin, dataDir, {
+    onChange: () => {
+      discoveryCache = null;
+      statusAt = 0;
+    },
+    windowsSetup:
+      process.platform === "win32" && process.env.FLEET_MANAGED_TOOLS === "1",
+    sandboxReady: store
+      .list("preferences")
+      .some((p) => p.id === "windows-sandbox" && p.ready),
+    onSandboxReady: () =>
+      store.put("preferences", {
+        id: "windows-sandbox",
+        ready: true,
+        completedAt: now(),
+      }),
+  });
+  engine.auth = auth;
   const terminals = new Terminals(engine);
   engine.terminals = terminals;
   const previews = new Previews(engine);
@@ -133,15 +153,18 @@ export async function createApp({
       };
       version = (await invoke(["--version"])).stdout.trim();
       try {
-        const result = await invoke(["login", "status"]);
-        message = (result.stdout + result.stderr).trim();
-        authenticated = /logged in/i.test(message);
+        const account = await auth.read();
+        authenticated = account.authenticated;
+        message = authenticated
+          ? "Signed in to Codex."
+          : "Sign in to Codex to continue.";
       } catch {
-        message = "Run codex login in your terminal, then refresh.";
+        message = "Sign in to Codex to continue.";
       }
     } catch {}
     statusAt = Date.now();
     return (statusCache = {
+      ...auth.publicState(),
       version,
       authenticated,
       message,
@@ -316,6 +339,7 @@ export async function createApp({
         if (
           !["GET", "HEAD"].includes(req.method) &&
           req.headers["idempotency-key"] &&
+          !path.startsWith("/api/auth/") &&
           !/^\/api\/projects\/[^/]+\/browser(?:\/|$)/.test(path)
         ) {
           const key = String(req.headers["idempotency-key"]);
@@ -482,6 +506,30 @@ export async function createApp({
             store.changes.off("event", eventListener);
             streams.delete(res);
           });
+          return;
+        }
+        if (path.startsWith("/api/auth/")) {
+          if (req.headers["x-fleet-token"] !== csrf) {
+            send({ error: "Reload Fleet to sign in." }, 403);
+            return;
+          }
+          res.setHeader("Cache-Control", "no-store");
+          if (path === "/api/auth/status" && req.method === "GET")
+            send(await auth.read());
+          else if (path === "/api/auth/login" && req.method === "POST")
+            send(await auth.start());
+          else if (path === "/api/auth/cancel" && req.method === "POST") {
+            await auth.cancel();
+            send({ ok: true });
+          } else if (path === "/api/auth/refresh" && req.method === "POST") {
+            statusAt = 0;
+            send(await auth.read(true));
+          } else if (
+            path === "/api/auth/windows-setup" &&
+            req.method === "POST"
+          )
+            send(await auth.setupSandbox(await body(req)));
+          else send({ error: "Unknown sign-in action" }, 404);
           return;
         }
         if (req.method === "POST" && path === "/api/onboarding") {
@@ -853,6 +901,7 @@ export async function createApp({
             return;
           }
           if (req.method === "POST" && action === "start") {
+            await auth.requireReady();
             const input = await body(req);
             send(engine.queue(key, input.prompt));
             return;
@@ -943,7 +992,13 @@ export async function createApp({
       });
       res.end(content);
     } catch (e) {
-      send({ error: redact(e.message) }, e.status || 400);
+      send(
+        {
+          error: redact(e.message),
+          ...(e.code === "CODEX_SIGN_IN_REQUIRED" ? { code: e.code } : {}),
+        },
+        e.status || 400,
+      );
     }
   });
   browsers.base = () =>
@@ -960,6 +1015,7 @@ export async function createApp({
     refreshInventories,
     close: async ({ preserveWorkers = false } = {}) => {
       closing = true;
+      auth.close();
       clearInterval(inventoryTimer);
       workflows.close();
       await teams.close();

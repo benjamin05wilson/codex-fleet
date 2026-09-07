@@ -2,10 +2,15 @@ appId: dev.fleet.local
 productName: Fleet
 asar: true
 npmRebuild: false
+beforePack: scripts/prepare-tools.mjs
 files:
   - desktop/**
   - package.json
 extraResources:
+  - from: build/managed-tools
+    to: tools
+    filter:
+      - "**/*"
   - from: .
     to: runtime
     filter:
@@ -30,11 +35,17 @@ mac:
     - target: dir
       arch: arm64
 win:
+  icon: desktop/assets/fleet.ico
   target:
     - target: nsis
       arch: x64
   artifactName: Fleet-${version}-Windows-${arch}.${ext}
 nsis:
+  installerIcon: desktop/assets/fleet.ico
+  uninstallerIcon: desktop/assets/fleet.ico
+  installerHeader: desktop/assets/installer-header.bmp
+  installerSidebar: desktop/assets/installer-sidebar.bmp
+  uninstallerSidebar: desktop/assets/installer-sidebar.bmp
   artifactName: Fleet-${version}-Windows-${arch}-Setup.${ext}
   oneClick: false
   perMachine: false

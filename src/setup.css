@@ -141,3 +141,54 @@
     margin-top: 36px;
   }
 }
+.sign-in-gate {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  padding: 28px;
+  border: 0;
+  background: #17191d;
+  color: #e9e9ec;
+  z-index: 10000;
+  box-sizing: border-box;
+}
+.sign-in-gate::backdrop {
+  background: #17191d;
+}
+.sign-in-content {
+  width: min(580px, 100%);
+  margin: clamp(36px, 12vh, 150px) auto 0;
+}
+.sign-in-content h1 {
+  font-size: clamp(28px, 4vw, 38px);
+  letter-spacing: -0.035em;
+  line-height: 1.15;
+  margin: 18px 0;
+}
+.sign-in-check {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  color: #aaaeb8;
+  margin: 14px 0;
+}
+.sign-in-check svg {
+  color: #c8ad88;
+}
+.sign-in-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 30px 0 18px;
+}
+.sign-in-error {
+  color: #e7b1ad;
+  line-height: 1.5;
+}
+.sign-in-gate a {
+  color: #dbba92;
+}

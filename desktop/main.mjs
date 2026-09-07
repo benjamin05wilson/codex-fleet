@@ -5,10 +5,12 @@ import {
   session,
   dialog,
   ipcMain,
+  shell,
 } from "electron";
 import { createNativeBrowser } from "./native-browser.mjs";
 import { createNativePageAgent } from "./native-page-agent.mjs";
 import { connectNativeAgent } from "./native-agent-bridge.mjs";
+import { windowChrome, removeWindowsMenu } from "./window-chrome.mjs";
 import { spawn, execFileSync } from "node:child_process";
 import { join, dirname, isAbsolute } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -29,11 +31,31 @@ const url = "http://127.0.0.1:" + Number(process.env.FLEET_PORT || 4317);
 const { nodeCandidates, desktopEnvironment } = await import(
   pathToFileURL(join(root, "shared/platform.mjs")).href
 );
+const { managedTools } = await import(
+  pathToFileURL(join(root, "shared/managed-tools.mjs")).href
+);
+if (app.isPackaged) {
+  const tools = managedTools(process.resourcesPath);
+  if (tools) {
+    process.env.FLEET_MANAGED_TOOLS = "1";
+    process.env.FLEET_NODE_BIN ||= tools.node;
+    process.env.FLEET_CODEX_BIN ||= tools.codex;
+    const env = desktopEnvironment(
+      process.env,
+      app.getPath("home"),
+      tools.node,
+    );
+    process.env.PATH = [...tools.path, env.PATH].join(
+      process.platform === "win32" ? ";" : ":",
+    );
+  }
+}
 let window;
 let nativeBrowser;
 app.commandLine.appendSwitch("disable-quic");
 const trial = process.env.FLEET_DESKTOP_TRIAL === "1";
 app.setName(trial ? "Fleet Native Preview" : "Fleet");
+if (process.platform === "win32") app.setAppUserModelId("dev.fleet.local");
 if (trial)
   app.setPath("userData", mkdtempSync(join(tmpdir(), "fleet-native-desktop-")));
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -70,6 +92,21 @@ else {
       ipcMain.handle("fleet:native-browser", (event, input) => {
         if (!nativeBrowser) throw new Error("Native browser is unavailable.");
         return nativeBrowser.handle(event, input);
+      });
+      ipcMain.handle("fleet:open-sign-in", async (event, authUrl) => {
+        if (
+          !window ||
+          event.sender !== window.webContents ||
+          event.senderFrame !== window.webContents.mainFrame ||
+          new URL(event.senderFrame.url).origin !== url
+        )
+          throw new Error("Untrusted sign-in request");
+        const { validAuthURL } = await import(
+          pathToFileURL(join(root, "shared/auth.mjs")).href
+        );
+        if (!validAuthURL(authUrl))
+          throw new Error("Invalid Codex sign-in address");
+        await shell.openExternal(authUrl);
       });
       async function openWindow() {
         try {
@@ -169,6 +206,15 @@ else {
             minHeight: 600,
             backgroundColor: "#151619",
             title: "Fleet",
+            ...windowChrome(),
+            ...(process.platform === "win32"
+              ? {
+                  icon: join(
+                    dirname(fileURLToPath(import.meta.url)),
+                    "assets/fleet.ico",
+                  ),
+                }
+              : {}),
             webPreferences: {
               sandbox: true,
               contextIsolation: true,
@@ -180,6 +226,7 @@ else {
               ),
             },
           });
+          removeWindowsMenu(window);
           window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
           if (trial) {
             window.setTitle("Fleet · Native Preview");

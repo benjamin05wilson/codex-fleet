@@ -69,8 +69,11 @@ export function createClient({
       });
       const value = await response.json();
       if (!response.ok)
-        throw new Error(
-          value.error || `Fleet request failed (${response.status}).`,
+        throw Object.assign(
+          new Error(
+            value.error || `Fleet request failed (${response.status}).`,
+          ),
+          { code: value.code, status: response.status },
         );
       if (path === "/state") token = value.csrf;
       return value;

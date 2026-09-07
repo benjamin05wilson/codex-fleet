@@ -1,0 +1,40 @@
+/* Windows-only native-controls overlay. macOS and web layouts stay unchanged. */
+.windows-desktop {
+  --window-title-height: 32px;
+}
+.windows-desktop body {
+  padding-top: var(--window-title-height);
+  background: #151619;
+}
+.windows-desktop body::before,
+.windows-desktop dialog[open]::before {
+  content: "Fleet";
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: env(titlebar-area-width, calc(100% - 150px));
+  height: var(--window-title-height);
+  padding-left: 12px;
+  display: flex;
+  align-items: center;
+  background: #151619;
+  color: #a8abb3;
+  font:
+    12px "Segoe UI",
+    sans-serif;
+  z-index: 100000;
+  user-select: none;
+  -webkit-app-region: drag;
+}
+.windows-desktop .app,
+.windows-desktop .boot,
+.windows-desktop .welcome-setup {
+  height: calc(100dvh - var(--window-title-height));
+}
+.windows-desktop .sign-in-gate {
+  padding-top: calc(28px + var(--window-title-height));
+}
+/* Modal backdrops must not tint the title bar or the native caption buttons. */
+.windows-desktop dialog::backdrop {
+  top: var(--window-title-height);
+}

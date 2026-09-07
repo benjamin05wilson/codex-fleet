@@ -16,6 +16,7 @@ import { validatePermissions } from "../shared/permissions.mjs";
 import { limits } from "./limits.mjs";
 import { launchWorker, attachWorker, stopWorker } from "./durable.mjs";
 import { sandboxCheck } from "./codex-client.mjs";
+import { isAuthenticationError, signInMessage } from "../shared/auth.mjs";
 import { shellCommand, stopProcessTree } from "../shared/platform.mjs";
 import { git, changes, snapshot, createWorktree, inside } from "./git.mjs";
 import {
@@ -283,7 +284,8 @@ export class Engine {
           await this.launch(run.id);
         } catch (e) {
           this.store.patch("run", run.id, {
-            status: "failed",
+            status:
+              e.code === "CODEX_SIGN_IN_REQUIRED" ? "interrupted" : "failed",
             error: redact(e.message),
           });
           this.store.event(run.projectId, run.id, "run.failed", {
@@ -296,6 +298,7 @@ export class Engine {
     }
   }
   async launch(key) {
+    await this.auth?.requireReady();
     let run = this.store.get("run", key);
     if (run.sessionKind === "terminal")
       throw new Error("Terminal sessions cannot launch Codex.");
@@ -480,6 +483,16 @@ export class Engine {
   onEvent(key, raw, state) {
     const run = this.store.get("run", key);
     const event = redactValue(raw);
+    if (
+      ["turn.failed", "error"].includes(event.type) &&
+      isAuthenticationError(event.error?.message || event.message)
+    ) {
+      this.auth?.invalidate();
+      state.stopStatus = "interrupted";
+      state.stderr = signInMessage;
+      event.error = { message: signInMessage };
+      if (event.message) event.message = signInMessage;
+    }
     this.store.event(run.projectId, key, event.type || "codex.event", event);
     if (event.type === "thread.started")
       this.store.patch("run", key, { threadId: event.thread_id });
@@ -661,6 +674,11 @@ export class Engine {
     clearTimeout(state.killTimer);
     this.processes.delete(key);
     const run = this.store.get("run", key);
+    if (isAuthenticationError(state.stderr)) {
+      this.auth?.invalidate();
+      state.stderr = signInMessage;
+      state.stopStatus = "interrupted";
+    }
     const status =
       state.stopStatus ||
       (code === 0 && state.sawComplete && !state.sawFailure

@@ -91,8 +91,14 @@ import { HomePage } from "./features/home.jsx";
 import { ProjectNavigation } from "./features/project-navigation.jsx";
 import { TerminalView } from "./features/terminal.jsx";
 import { WelcomeSetup } from "./features/welcome-setup.jsx";
+import { SignInGate } from "./features/sign-in.jsx";
 import { NativeBrowser } from "./features/native-browser.jsx";
 import "./browser.css";
+import "./windows.css";
+document.documentElement.classList.toggle(
+  "windows-desktop",
+  window.fleetDesktop?.platform === "win32",
+);
 function NativePreviewPage() {
   const [project, setProject] = useState(null),
     [error, setError] = useState("");
@@ -478,6 +484,7 @@ function App() {
   if ((state.onboarding === null && !setupDismissed) || modal === "onboarding")
     return (
       <>
+        <SignInGate initial={state.status} onReady={refresh} />
         <WelcomeSetup
           saved={state.onboarding}
           busy={busy}
@@ -508,6 +515,7 @@ function App() {
     );
   return (
     <div className="app simple-app">
+      <SignInGate initial={state.status} onReady={refresh} />
       <div className="workspace focused-workspace">
         <header className="workspace-bar">
           <ProjectNavigation

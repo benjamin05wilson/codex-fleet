@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld(
     platform: process.platform,
     version: "0.2.0",
     chooseRepository: () => ipcRenderer.invoke("fleet:choose-repository"),
+    openSignIn: (url) => ipcRenderer.invoke("fleet:open-sign-in", url),
     nativeBrowser: (input) => ipcRenderer.invoke("fleet:native-browser", input),
     onBrowserRequested: (callback) => {
       const listener = (_event, request) =>

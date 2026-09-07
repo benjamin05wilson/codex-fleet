@@ -12,7 +12,7 @@ npm run build
 npm start
 ```
 
-Open [the local workspace](http://127.0.0.1:4317). Run `codex login` if needed; Fleet reuses that authentication and never asks for an API key.
+Open [the local workspace](http://127.0.0.1:4317). Fleet guides you through Codex sign-in before coding; existing Codex authentication is reused. Passwords and credentials remain with Codex, not Fleet.
 
 For the native shell:
 
@@ -23,9 +23,17 @@ npm run desktop:package
 
 On macOS the package is `release/mac-arm64/Fleet.app`; packaging needs the macOS command-line tools for the app icon. On Windows `desktop:package` produces an x64 NSIS installer. These development builds are unsigned (and the Mac build is not notarized); they are not verified public releases.
 
+Windows branding lives in `desktop/assets`: Fleet's multi-size icon and installer artwork are checked in so Windows builds need no Mac graphics tools. Run `npm run desktop:icon` on macOS to regenerate both platform icons from the existing three-bar mark. Packaging checks inspect the Windows executable and installer icon resources to catch a regression to Electron's default icon.
+
 ### Windows setup
 
-Install **Node.js 24 or newer (x64)** and **Git for Windows**, with both on PATH. Install and sign in to Codex from PowerShell:
+**Installer users:** install Fleet and open it. The Windows installer and ZIP include private copies of Node.js 24.19.0 (with npm), Git 2.55.0.windows.5 (MinGit), Codex 0.153.4 (including ripgrep and sandbox helpers), and the native terminal/browser runtime. No separate Node/Git installers, global npm install, PATH editing, or external Chrome are needed. These dependencies are downloaded and checksum-verified when the release is built, then installed with Fleet; they do not need a second download at first launch.
+
+First launch asks you to **Sign in with ChatGPT**, opens the official Codex browser login, and continues automatically after Codex confirms success. If credentials expire, Fleet blocks new tasks and returns to sign-in without clearing the draft. It never automatically resubmits a task after login.
+
+Next, **Set up Windows sandbox** runs Codex's supported elevated setup flow after your explicit click. Approve Windows' system prompt if you want setup to proceed. Cancelled/failed setup remains blocked with retry; Fleet never switches to YOLO or disables protections as a fallback.
+
+**Source-checkout developers only:** install Node.js 24+ and Git on PATH, then:
 
 ```powershell
 npm.cmd install --global @openai/codex
@@ -34,9 +42,9 @@ npm.cmd ci
 npm.cmd run desktop
 ```
 
-Run the last two commands in the Fleet checkout. Alternatively, extract a Windows ZIP and run `Fleet.exe`, or use the installer; Node, Git and Codex are still external prerequisites. Fleet detects Node in standard installation directories and on PATH, and adds the user's npm binary directory to its daemon environment. Custom installations can set `FLEET_NODE_BIN` to the full `node.exe` path and `FLEET_CODEX_BIN` to `codex.exe` or the npm package's `bin/codex.js`. Fleet invokes npm's Codex entry point through Node, not through a shell with interpolated agent arguments. The desktop's workspace defaults to `%APPDATA%\Fleet\data` and is preserved when the app is closed or uninstalled.
+Run the last two commands in the Fleet checkout. For a packaged ZIP, keep the entire extracted directory together and run `Fleet.exe`. Bundled tools are scoped to Fleet's process environment and do not replace your machine's installations or copy credentials. Custom installations can still set `FLEET_NODE_BIN` and `FLEET_CODEX_BIN` explicitly. The desktop's workspace defaults to `%APPDATA%\Fleet\data` and is preserved when the app is closed or uninstalled. macOS arm64 packages bundle Node and Codex too, but still use the Mac's Git/command-line tools.
 
-Complete Codex's native Windows sandbox setup interactively before starting sandboxed tasks in Fleet. Fleet preserves your selected sandbox and does not enable YOLO or weaken it to work around setup failures. OpenAI recommends the elevated Windows sandbox; its setup can require administrator approval. See the [official Windows sandbox guidance](https://learn.chatgpt.com/docs/windows/windows-sandbox).
+Source-checkout users should complete Codex's native Windows sandbox setup themselves. Packaged Windows builds handle that step through onboarding. See the [official Windows sandbox guidance](https://learn.chatgpt.com/docs/windows/windows-sandbox) and [app-server authentication/setup protocol](https://learn.chatgpt.com/docs/app-server).
 
 Terminals use Windows PowerShell without loading a profile. Use `npm.cmd`/`codex.cmd` there if your execution policy blocks npm's PowerShell shims; Fleet does not change that policy. Approved preview and validation command strings use `cmd.exe` on Windows, so use Windows-compatible commands (e.g. `npm test`, not `export ...` or `/bin/sh`). The shared native browser is the same Electron renderer and uses the same scoped agent bridge—no external Chrome or streamed fallback.
 

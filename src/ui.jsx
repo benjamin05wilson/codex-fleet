@@ -62,7 +62,13 @@ function setToken(value) {
   getClient().setToken(value);
 }
 async function api(path, method = "GET", data) {
-  return getClient().request(path, method, data);
+  try {
+    return await getClient().request(path, method, data);
+  } catch (error) {
+    if (error.code === "CODEX_SIGN_IN_REQUIRED")
+      window.dispatchEvent(new Event("fleet:sign-in-required"));
+    throw error;
+  }
 }
 function subscribeBrowserFrames(path, onFrame, onError) {
   return getClient().subscribe(path, onFrame, onError);
