@@ -4,6 +4,7 @@ import { createServer } from "node:net";
 import { request } from "node:http";
 import { ACTIVE } from "./engine.mjs";
 import { redact } from "./sentinel.mjs";
+import { shellCommand, stopProcessTree } from "../shared/platform.mjs";
 
 export function previewPort(value, forbidden = []) {
   const port = Number(value);
@@ -98,6 +99,7 @@ export class Previews {
         {
           cwd: run.worktree,
           detached: true,
+          windowsHide: true,
           stdio: ["pipe", "pipe", "pipe", "ipc"],
         },
       );
@@ -148,9 +150,7 @@ export class Previews {
           clearTimeout(session.killTimer);
           // A supervisor can exit before a background descendant. Terminate only
           // this owned process group before releasing the worktree lease.
-          try {
-            process.kill(-child.pid, "SIGKILL");
-          } catch {}
+          if (process.platform !== "win32") stopProcessTree(child, "SIGKILL");
           this.sessions.delete(run.id);
           patch({
             status: session.stopping ? "stopped" : "exited",
@@ -176,8 +176,9 @@ export class Previews {
       }, 1500);
       session.timeout = setTimeout(() => this.stop(run.id), 15 * 60000);
       child.send({
-        bin: "/bin/zsh",
-        args: ["-f", "-c", command],
+        ...(process.platform === "darwin"
+          ? { bin: "/bin/zsh", args: ["-f", "-c", command] }
+          : shellCommand(command)),
         cwd: run.worktree,
       });
       return this.engine.store.get("run", run.id).preview;
@@ -194,13 +195,9 @@ export class Previews {
       this.engine.store.patch("run", id, {
         preview: { ...run.preview, status: "stopping", url: null },
       });
-      try {
-        process.kill(-session.child.pid, "SIGTERM");
-      } catch {}
+      stopProcessTree(session.child);
       session.killTimer = setTimeout(() => {
-        try {
-          process.kill(-session.child.pid, "SIGKILL");
-        } catch {}
+        stopProcessTree(session.child, "SIGKILL");
       }, 2500);
     }
     await session.done;

@@ -26,6 +26,9 @@ const root = app.isPackaged
   ? join(process.resourcesPath, "runtime")
   : join(dirname(fileURLToPath(import.meta.url)), "..");
 const url = "http://127.0.0.1:" + Number(process.env.FLEET_PORT || 4317);
+const { nodeCandidates, desktopEnvironment } = await import(
+  pathToFileURL(join(root, "shared/platform.mjs")).href
+);
 let window;
 let nativeBrowser;
 app.commandLine.appendSwitch("disable-quic");
@@ -36,8 +39,10 @@ if (trial)
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on("second-instance", () => {
-    window?.show();
-    window?.focus();
+    if (window && !window.isDestroyed()) {
+      window.show();
+      window.focus();
+    } else app.emit("activate");
   });
   // Electron waits for the entry module to finish before emitting ready.
   // Awaiting readiness at module scope would deadlock packaged startup.
@@ -86,28 +91,26 @@ else {
               throw new Error(
                 "Open your normal Fleet app first. The native preview reuses its running service and never creates a new workspace.",
               );
-            const candidates = [
-              process.env.FLEET_NODE_BIN,
-              join(app.getPath("home"), ".local/node/bin/node"),
-              "/opt/homebrew/bin/node",
-              "/usr/local/bin/node",
-              "node",
-            ].filter(Boolean);
-            const node = candidates.find((bin) => {
+            const candidates = nodeCandidates(process.env, app.getPath("home"));
+            let node;
+            for (const bin of candidates) {
               try {
-                return (
-                  Number(
-                    execFileSync(
-                      bin,
-                      ["-p", 'process.versions.node.split(".")[0]'],
-                      { encoding: "utf8" },
-                    ).trim(),
-                  ) >= 24
+                const probe = JSON.parse(
+                  execFileSync(
+                    bin,
+                    [
+                      "-p",
+                      'JSON.stringify({major:Number(process.versions.node.split(".")[0]),path:process.execPath})',
+                    ],
+                    { encoding: "utf8", windowsHide: true, timeout: 5000 },
+                  ),
                 );
-              } catch {
-                return false;
-              }
-            });
+                if (probe.major >= 24 && isAbsolute(probe.path)) {
+                  node = probe.path;
+                  break;
+                }
+              } catch {}
+            }
             if (!node)
               throw new Error(
                 "Install Node.js 24 or set FLEET_NODE_BIN. Fleet’s independent daemon does not run inside Electron.",
@@ -124,19 +127,11 @@ else {
             const log = openSync(join(data, "daemon.log"), "a", 0o600);
             const child = spawn(node, [join(root, "server/index.mjs")], {
               detached: true,
+              windowsHide: true,
               stdio: ["ignore", log, log],
               env: {
-                ...process.env,
+                ...desktopEnvironment(process.env, app.getPath("home"), node),
                 FLEET_DATA_DIR: data,
-                PATH: [
-                  dirname(node),
-                  join(app.getPath("home"), ".local/bin"),
-                  "/opt/homebrew/bin",
-                  "/usr/local/bin",
-                  process.env.PATH,
-                ]
-                  .filter(Boolean)
-                  .join(":"),
               },
             });
             child.unref();
@@ -278,6 +273,7 @@ else {
       });
       app.on("window-all-closed", () => {
         /* The daemon and execution workers keep running. */
+        if (process.platform !== "darwin") app.quit();
       });
     })
     .catch((error) => {

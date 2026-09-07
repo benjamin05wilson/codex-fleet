@@ -28,6 +28,7 @@ import { Teams, teamRoles, teamDefaults } from "./teams.mjs";
 import { searchWorkspace, previewFile } from "./search.mjs";
 import { onboardingSettings, saveOnboarding } from "./onboarding.mjs";
 import { NativeBrowserBroker } from "./native-browser-broker.mjs";
+import { commandInvocation } from "../shared/platform.mjs";
 
 const exec = promisify(execFile);
 async function body(req, maxBytes = 100_000) {
@@ -126,13 +127,13 @@ export async function createApp({
       authenticated = false,
       message = "Codex is not available in PATH.";
     try {
-      version = (
-        await exec(command, ["--version"], { timeout: 5000 })
-      ).stdout.trim();
+      const invoke = (args) => {
+        const call = commandInvocation(command, args);
+        return exec(call.bin, call.args, { timeout: 5000, windowsHide: true });
+      };
+      version = (await invoke(["--version"])).stdout.trim();
       try {
-        const result = await exec(command, ["login", "status"], {
-          timeout: 5000,
-        });
+        const result = await invoke(["login", "status"]);
         message = (result.stdout + result.stderr).trim();
         authenticated = /logged in/i.test(message);
       } catch {

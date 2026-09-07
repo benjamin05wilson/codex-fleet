@@ -2,6 +2,12 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { EventEmitter } from "node:events";
 import { browserStartupConfig } from "../shared/browser-tools.mjs";
+import {
+  commandInvocation,
+  processEnvironment,
+  shellCommand,
+  stopProcessTree,
+} from "../shared/platform.mjs";
 
 // Verified against the installed 0.153.2 schema; no experimental API opt-in.
 export class CodexClient extends EventEmitter {
@@ -15,27 +21,21 @@ export class CodexClient extends EventEmitter {
   }
   async connect() {
     const browser = browserStartupConfig(this.browser);
-    const env = Object.fromEntries(
-      ["PATH", "HOME", "USER", "TMPDIR", "CODEX_HOME"]
-        .filter((k) => process.env[k])
-        .map((k) => [k, process.env[k]]),
-    );
-    this.child = spawn(
-      this.bin,
-      [
-        "app-server",
-        "-c",
-        "sandbox_workspace_write.network_access=false",
-        "-c",
-        'approval_policy="never"',
-        ...browser.args,
-      ],
-      {
-        cwd: this.cwd,
-        env: { ...env, ...browser.env, LANG: "en_US.UTF-8" },
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
+    const env = processEnvironment();
+    const invocation = commandInvocation(this.bin, [
+      "app-server",
+      "-c",
+      "sandbox_workspace_write.network_access=false",
+      "-c",
+      'approval_policy="never"',
+      ...browser.args,
+    ]);
+    this.child = spawn(invocation.bin, invocation.args, {
+      cwd: this.cwd,
+      windowsHide: true,
+      env: { ...env, ...browser.env, LANG: "en_US.UTF-8" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     this.child.stdin.on("error", () => {});
     this.child.stderr.on("data", (b) => this.emit("diagnostic", b.toString()));
     const fail = (error) => {
@@ -110,7 +110,8 @@ export class CodexClient extends EventEmitter {
   }
   close() {
     this.lines?.close();
-    this.child?.kill("SIGTERM");
+    if (process.platform === "win32") stopProcessTree(this.child);
+    else this.child?.kill("SIGTERM");
   }
 }
 
@@ -139,7 +140,15 @@ export async function sandboxCheck(bin, cwd, command, signal) {
     return await client.request(
       "command/exec",
       {
-        command: ["/bin/sh", "-c", command],
+        command:
+          process.platform === "win32"
+            ? [
+                process.execPath,
+                "-e",
+                "const{spawnSync}=require('node:child_process');const r=spawnSync(process.env.ComSpec||'cmd.exe',['/d','/s','/c','\"'+process.argv[1]+'\"'],{stdio:'inherit',windowsVerbatimArguments:true,windowsHide:true});process.exit(r.status??1)",
+                command,
+              ]
+            : [shellCommand(command).bin, ...shellCommand(command).args],
         cwd,
         sandboxPolicy: sandboxPolicy(cwd),
         timeoutMs: 120000,

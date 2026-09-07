@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ACTIVE } from "./engine.mjs";
+import { processEnvironment, terminalCommand } from "../shared/platform.mjs";
 export class Terminals {
   constructor(engine) {
     this.engine = engine;
@@ -35,12 +36,10 @@ export class Terminals {
     this.opening.add(run.worktree);
     try {
       const pty = await import("node-pty");
-      const env = Object.fromEntries(
-        ["PATH", "HOME", "USER", "TMPDIR", "LANG"]
-          .filter((k) => process.env[k])
-          .map((k) => [k, process.env[k]]),
-      );
-      const shell = pty.spawn("/bin/zsh", ["-f"], {
+      const env = processEnvironment();
+      delete env.CODEX_HOME;
+      const command = terminalCommand();
+      const shell = pty.spawn(command.bin, command.args, {
         name: "xterm-256color",
         cols: 100,
         rows: 30,

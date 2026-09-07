@@ -13,13 +13,34 @@ extraResources:
       - shared/**
       - cmd/**
       - dist/**
-      - node_modules/node-pty/**
-      - node_modules/node-addon-api/**
+  # Explicit sources prevent electron-builder's default node_modules exclusion
+  # from dropping dependencies needed by the external Node daemon.
+  - from: node_modules/node-pty
+    to: runtime/node_modules/node-pty
+    filter:
+      - "**/*"
+  - from: node_modules/node-addon-api
+    to: runtime/node_modules/node-addon-api
+    filter:
+      - "**/*"
 mac:
   icon: build/fleet.icns
   category: public.app-category.developer-tools
   target:
     - target: dir
       arch: arm64
+win:
+  target:
+    - target: nsis
+      arch: x64
+  artifactName: Fleet-${version}-Windows-${arch}.${ext}
+nsis:
+  artifactName: Fleet-${version}-Windows-${arch}-Setup.${ext}
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false
 directories:
   output: release

@@ -30,7 +30,7 @@ export async function launchWorker(engine, run, prompt) {
   const child = spawn(
     process.execPath,
     [fileURLToPath(new URL("./worker.mjs", import.meta.url)), directory],
-    { detached: true, stdio: "ignore", cwd: run.worktree },
+    { detached: true, windowsHide: true, stdio: "ignore", cwd: run.worktree },
   );
   child.on("error", (error) =>
     engine.store.patch("run", run.id, {

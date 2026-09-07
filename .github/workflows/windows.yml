@@ -1,0 +1,31 @@
+name: Windows
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name "Fleet CI"
+      - run: git config --global user.email "fleet-ci@example.invalid"
+      - run: npm run test:windows
+      - run: npm run test:ui
+      - run: npm run build
+      - run: node tests/live-native-browser.mjs --run --ui --shared --auto-open --full-app
+      - run: npm run desktop:package:win
+      - run: node scripts/verify-windows-package.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fleet-Windows-x64
+          path: release/*-Windows-x64-Setup.exe
+          if-no-files-found: error

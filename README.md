@@ -4,7 +4,7 @@ A local, Codex-only workspace for running tasks, reviewing evidence, and keeping
 
 ## Open Fleet
 
-Requires macOS, Node.js 24+, Git, and an authenticated Codex CLI. The app-server adapter and live sandbox check were verified with Codex CLI **0.153.2**.
+Targets macOS and Windows 11 x64, with Node.js 24+, Git, and an authenticated native Codex CLI. The app-server adapter and live sandbox check were verified on macOS with Codex CLI **0.153.2**. Native Windows verification is handled separately by the Windows workflow; a successful Mac build alone does not establish Windows runtime compatibility.
 
 ```sh
 npm ci
@@ -21,7 +21,36 @@ npm run desktop
 npm run desktop:package
 ```
 
-The package is `release/mac-arm64/Fleet.app`. Packaging needs the macOS command-line tools for the reproducible app icon. This local build is unsigned and not notarized; it is not a ready-to-distribute public release.
+On macOS the package is `release/mac-arm64/Fleet.app`; packaging needs the macOS command-line tools for the app icon. On Windows `desktop:package` produces an x64 NSIS installer. These development builds are unsigned (and the Mac build is not notarized); they are not verified public releases.
+
+### Windows setup
+
+Install **Node.js 24 or newer (x64)** and **Git for Windows**, with both on PATH. Install and sign in to Codex from PowerShell:
+
+```powershell
+npm.cmd install --global @openai/codex
+codex.cmd login
+npm.cmd ci
+npm.cmd run desktop
+```
+
+Run the last two commands in the Fleet checkout. Alternatively, extract a Windows ZIP and run `Fleet.exe`, or use the installer; Node, Git and Codex are still external prerequisites. Fleet detects Node in standard installation directories and on PATH, and adds the user's npm binary directory to its daemon environment. Custom installations can set `FLEET_NODE_BIN` to the full `node.exe` path and `FLEET_CODEX_BIN` to `codex.exe` or the npm package's `bin/codex.js`. Fleet invokes npm's Codex entry point through Node, not through a shell with interpolated agent arguments. The desktop's workspace defaults to `%APPDATA%\Fleet\data` and is preserved when the app is closed or uninstalled.
+
+Complete Codex's native Windows sandbox setup interactively before starting sandboxed tasks in Fleet. Fleet preserves your selected sandbox and does not enable YOLO or weaken it to work around setup failures. OpenAI recommends the elevated Windows sandbox; its setup can require administrator approval. See the [official Windows sandbox guidance](https://learn.chatgpt.com/docs/windows/windows-sandbox).
+
+Terminals use Windows PowerShell without loading a profile. Use `npm.cmd`/`codex.cmd` there if your execution policy blocks npm's PowerShell shims; Fleet does not change that policy. Approved preview and validation command strings use `cmd.exe` on Windows, so use Windows-compatible commands (e.g. `npm test`, not `export ...` or `/bin/sh`). The shared native browser is the same Electron renderer and uses the same scoped agent bridge—no external Chrome or streamed fallback.
+
+Build and test on Windows:
+
+```powershell
+npm.cmd run test:windows
+npm.cmd run test:ui
+npm.cmd run desktop:package:win
+# Or an extract-and-run archive:
+npm.cmd run desktop:package:win:zip
+```
+
+The installer is `release/Fleet-0.2.0-Windows-x64-Setup.exe`; the ZIP is `release/Fleet-0.2.0-Windows-x64.zip`. Keep the complete extracted folder together. `.github/workflows/windows.yml` runs Windows-specific smoke tests for SQLite, Git worktrees, Codex protocol discovery using a fixture, ConPTY, command quoting and process-tree cleanup, then builds the installer. These fixture checks make no model calls. Real authenticated Codex sandbox execution still needs a Windows machine with the sandbox configured; Windows ARM64, WSL-hosted daemons and public code signing are not covered by this target.
 
 The desktop starts or connects to an independent daemon. Closing or quitting the desktop does not stop Codex workers. It remembers the connected daemon's data directory for subsequent launches. From a source checkout, `npm start` runs the daemon in the foreground; stopping it detaches surviving Codex workers, and restarting reconnects to their journals. Interactive worktree shells and validation commands are not durable across daemon shutdown.
 
