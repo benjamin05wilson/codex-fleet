@@ -91,8 +91,72 @@ import { HomePage } from "./features/home.jsx";
 import { ProjectNavigation } from "./features/project-navigation.jsx";
 import { TerminalView } from "./features/terminal.jsx";
 import { WelcomeSetup } from "./features/welcome-setup.jsx";
+import { SignInGate } from "./features/sign-in.jsx";
+import { NativeBrowser } from "./features/native-browser.jsx";
+import "./browser.css";
+import "./windows.css";
+document.documentElement.classList.toggle(
+  "windows-desktop",
+  window.fleetDesktop?.platform === "win32",
+);
+function NativePreviewPage() {
+  const [project, setProject] = useState(null),
+    [error, setError] = useState("");
+  const query = new URLSearchParams(location.search);
+  useEffect(() => {
+    let alive = true;
+    api("/state")
+      .then((state) => {
+        if (!alive) return;
+        const project = state.projects.find(
+          (p) => p.id === query.get("nativePreview"),
+        );
+        if (project) setProject(project);
+        else setError("This project is unavailable.");
+      })
+      .catch((e) => {
+        if (alive) setError(e.message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return project ? (
+    <NativeBrowser
+      project={project}
+      initialURL={query.get("url") || ""}
+      onBack={() => location.assign(location.origin)}
+    />
+  ) : (
+    <p role="status">{error || "Loading native preview…"}</p>
+  );
+}
 function App() {
   const [state, setState] = useState(null);
+  const [browserRequest, setBrowserRequest] = useState(null);
+  const latestState = useRef(null);
+  latestState.current = state;
+  useEffect(
+    () =>
+      window.fleetDesktop?.onBrowserRequested?.((request) => {
+        const current = latestState.current;
+        const run = current?.runs.find(
+          (r) =>
+            r.id === request.runId &&
+            r.projectId === request.projectId &&
+            !r.deletedAt,
+        );
+        if (!run || !current.projects.some((p) => p.id === request.projectId))
+          return;
+        localStorage.setItem(`fleet.tool.${run.id}`, "browser");
+        setProjectId(request.projectId);
+        setSelected(run.id);
+        setAllProjects(false);
+        setView("sessions");
+        setBrowserRequest(request);
+      }),
+    [],
+  );
   const [showExamples, setShowExamples] = useState(
     () => localStorage.getItem("fleet.show-examples") === "true",
   );
@@ -420,6 +484,7 @@ function App() {
   if ((state.onboarding === null && !setupDismissed) || modal === "onboarding")
     return (
       <>
+        <SignInGate initial={state.status} onReady={refresh} />
         <WelcomeSetup
           saved={state.onboarding}
           busy={busy}
@@ -450,6 +515,7 @@ function App() {
     );
   return (
     <div className="app simple-app">
+      <SignInGate initial={state.status} onReady={refresh} />
       <div className="workspace focused-workspace">
         <header className="workspace-bar">
           <ProjectNavigation
@@ -661,6 +727,7 @@ function App() {
                         ) : (
                           <RunDetail
                             key={selected}
+                            browserRequest={browserRequest}
                             runId={selected}
                             project={project}
                             state={state}
@@ -1002,4 +1069,12 @@ function Welcome({ onAdd, onNew }) {
 }
 export { App, MD, RunDialog, MissionDialog, Sentinel, BrainView };
 const rootElement = document.getElementById("root");
-if (rootElement) createRoot(rootElement).render(<App />);
+if (rootElement)
+  createRoot(rootElement).render(
+    window.fleetDesktop?.nativeBrowser &&
+      new URLSearchParams(location.search).has("nativePreview") ? (
+      <NativePreviewPage />
+    ) : (
+      <App />
+    ),
+  );

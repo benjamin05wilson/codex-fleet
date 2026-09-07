@@ -138,7 +138,16 @@ import { TerminalView } from "./terminal.jsx";
 import { Preview } from "./preview.jsx";
 import { ProjectBrowser } from "./browser.jsx";
 
-function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
+function RunDetail({
+  runId,
+  project,
+  state,
+  act,
+  busy,
+  goRun,
+  onSettings,
+  browserRequest,
+}) {
   const [detail, setDetail] = useState(null);
   const [tab, setTab] = useState(() => {
     const selected = state.runs.find((r) => r.id === runId);
@@ -158,6 +167,13 @@ function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
       : "conversation";
   });
   const [diff, setDiff] = useState(null);
+  useEffect(() => {
+    if (
+      browserRequest?.runId === runId &&
+      browserRequest.projectId === project.id
+    )
+      setTab("browser");
+  }, [browserRequest, runId, project.id]);
   const [optionsOpen, setOptionsOpen] = useState(false);
   useEffect(() => {
     // Reopening a shell requires a deliberate click, even though its process may survive.
@@ -598,7 +614,14 @@ function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
                 {isActive && (
                   <div className="working-message">
                     <span className="working-dot" />
-                    Codex is working<span>Events appear as they arrive</span>
+                    {events
+                      .filter(
+                        (e) =>
+                          e.type === "worker.phase" &&
+                          Date.parse(e.time) >= Date.parse(run.startedAt || 0),
+                      )
+                      .at(-1)?.data.phase || "Codex is working"}
+                    <span>Events appear as they arrive</span>
                   </div>
                 )}
               </>
@@ -705,34 +728,37 @@ function RunDetail({ runId, project, state, act, busy, goRun, onSettings }) {
         </section>
         {tab !== "conversation" && (
           <aside className="tool-pane" aria-label="Session tools">
-            <header className="tool-pane-heading">
-              <strong>
-                {tab === "review"
-                  ? "Changes & review"
-                  : tab === "files"
-                    ? "Files"
-                    : tab === "preview"
-                      ? "Preview"
-                      : tab === "browser"
-                        ? "Browser"
-                        : tab === "terminal"
-                          ? "Worktree shell"
-                          : "Session details"}
-              </strong>
-              <button
-                aria-label="Close session tool"
-                onClick={() => setTab("conversation")}
-              >
-                ×
-              </button>
-            </header>
+            {tab !== "browser" && (
+              <header className="tool-pane-heading">
+                <strong>
+                  {tab === "review"
+                    ? "Changes & review"
+                    : tab === "files"
+                      ? "Files"
+                      : tab === "preview"
+                        ? "Preview"
+                        : tab === "browser"
+                          ? "Browser"
+                          : tab === "terminal"
+                            ? "Worktree shell"
+                            : "Session details"}
+                </strong>
+                <button
+                  aria-label="Close session tool"
+                  onClick={() => setTab("conversation")}
+                >
+                  ×
+                </button>
+              </header>
+            )}
             <div className="tool-scroll">
               {tab === "files" && <SessionFiles run={run} />}
               {tab === "browser" && (
                 <ProjectBrowser
-                  key={project.id}
+                  key={`${project.id}:${browserRequest?.id || "manual"}`}
                   project={project}
                   run={run}
+                  onClosePanel={() => setTab("conversation")}
                   onEvidence={(text) => {
                     setFollowup(text);
                     setTab("conversation");

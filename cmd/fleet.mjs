@@ -90,7 +90,17 @@ try {
       const url = base + "/#session=" + encodeURIComponent(subject);
       if (json) output({ url });
       else {
-        const p = spawn("open", [url], { stdio: "ignore" });
+        const p =
+          process.platform === "win32"
+            ? spawn("rundll32.exe", ["url.dll,FileProtocolHandler", url], {
+                stdio: "ignore",
+                windowsHide: true,
+              })
+            : spawn(
+                process.platform === "darwin" ? "open" : "xdg-open",
+                [url],
+                { stdio: "ignore" },
+              );
         p.on("error", (e) => {
           console.error(e.message);
           process.exitCode = 1;

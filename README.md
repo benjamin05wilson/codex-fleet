@@ -4,7 +4,7 @@ A local, Codex-only workspace for running tasks, reviewing evidence, and keeping
 
 ## Open Fleet
 
-Requires macOS, Node.js 24+, Git, and an authenticated Codex CLI. The app-server adapter and live sandbox check were verified with Codex CLI **0.153.2**.
+Targets macOS and Windows 11 x64, with Node.js 24+, Git, and an authenticated native Codex CLI. The app-server adapter and live sandbox check were verified on macOS with Codex CLI **0.153.2**. Native Windows verification is handled separately by the Windows workflow; a successful Mac build alone does not establish Windows runtime compatibility.
 
 ```sh
 npm ci
@@ -12,7 +12,7 @@ npm run build
 npm start
 ```
 
-Open [the local workspace](http://127.0.0.1:4317). Run `codex login` if needed; Fleet reuses that authentication and never asks for an API key.
+Open [the local workspace](http://127.0.0.1:4317). Fleet guides you through Codex sign-in before coding; existing Codex authentication is reused. Passwords and credentials remain with Codex, not Fleet.
 
 For the native shell:
 
@@ -21,7 +21,44 @@ npm run desktop
 npm run desktop:package
 ```
 
-The package is `release/mac-arm64/Fleet.app`. Packaging needs the macOS command-line tools for the reproducible app icon. This local build is unsigned and not notarized; it is not a ready-to-distribute public release.
+On macOS the package is `release/mac-arm64/Fleet.app`; packaging needs the macOS command-line tools for the app icon. On Windows `desktop:package` produces an x64 NSIS installer. These development builds are unsigned (and the Mac build is not notarized); they are not verified public releases.
+
+Windows branding lives in `desktop/assets`: Fleet's multi-size icon and installer artwork are checked in so Windows builds need no Mac graphics tools. Run `npm run desktop:icon` on macOS to regenerate both platform icons from the existing three-bar mark. Packaging checks inspect the Windows executable and installer icon resources to catch a regression to Electron's default icon.
+
+### Windows setup
+
+**Installer users:** install Fleet and open it. The Windows installer and ZIP include private copies of Node.js 24.19.0 (with npm), Git 2.55.0.windows.5 (MinGit), Codex 0.153.4 (including ripgrep and sandbox helpers), and the native terminal/browser runtime. No separate Node/Git installers, global npm install, PATH editing, or external Chrome are needed. These dependencies are downloaded and checksum-verified when the release is built, then installed with Fleet; they do not need a second download at first launch.
+
+First launch asks you to **Sign in with ChatGPT**, opens the official Codex browser login, and continues automatically after Codex confirms success. If credentials expire, Fleet blocks new tasks and returns to sign-in without clearing the draft. It never automatically resubmits a task after login.
+
+Next, **Set up Windows sandbox** runs Codex's supported elevated setup flow after your explicit click. Approve Windows' system prompt if you want setup to proceed. Cancelled/failed setup remains blocked with retry; Fleet never switches to YOLO or disables protections as a fallback.
+
+**Source-checkout developers only:** install Node.js 24+ and Git on PATH, then:
+
+```powershell
+npm.cmd install --global @openai/codex
+codex.cmd login
+npm.cmd ci
+npm.cmd run desktop
+```
+
+Run the last two commands in the Fleet checkout. For a packaged ZIP, keep the entire extracted directory together and run `Fleet.exe`. Bundled tools are scoped to Fleet's process environment and do not replace your machine's installations or copy credentials. Custom installations can still set `FLEET_NODE_BIN` and `FLEET_CODEX_BIN` explicitly. The desktop's workspace defaults to `%APPDATA%\Fleet\data` and is preserved when the app is closed or uninstalled. macOS arm64 packages bundle Node and Codex too, but still use the Mac's Git/command-line tools.
+
+Source-checkout users should complete Codex's native Windows sandbox setup themselves. Packaged Windows builds handle that step through onboarding. See the [official Windows sandbox guidance](https://learn.chatgpt.com/docs/windows/windows-sandbox) and [app-server authentication/setup protocol](https://learn.chatgpt.com/docs/app-server).
+
+Terminals use Windows PowerShell without loading a profile. Use `npm.cmd`/`codex.cmd` there if your execution policy blocks npm's PowerShell shims; Fleet does not change that policy. Approved preview and validation command strings use `cmd.exe` on Windows, so use Windows-compatible commands (e.g. `npm test`, not `export ...` or `/bin/sh`). The shared native browser is the same Electron renderer and uses the same scoped agent bridge—no external Chrome or streamed fallback.
+
+Build and test on Windows:
+
+```powershell
+npm.cmd run test:windows
+npm.cmd run test:ui
+npm.cmd run desktop:package:win
+# Or an extract-and-run archive:
+npm.cmd run desktop:package:win:zip
+```
+
+The installer is `release/Fleet-0.2.0-Windows-x64-Setup.exe`; the ZIP is `release/Fleet-0.2.0-Windows-x64.zip`. Keep the complete extracted folder together. `.github/workflows/windows.yml` runs Windows-specific smoke tests for SQLite, Git worktrees, Codex protocol discovery using a fixture, ConPTY, command quoting and process-tree cleanup, then builds the installer. These fixture checks make no model calls. Real authenticated Codex sandbox execution still needs a Windows machine with the sandbox configured; Windows ARM64, WSL-hosted daemons and public code signing are not covered by this target.
 
 The desktop starts or connects to an independent daemon. Closing or quitting the desktop does not stop Codex workers. It remembers the connected daemon's data directory for subsequent launches. From a source checkout, `npm start` runs the daemon in the foreground; stopping it detaches surviving Codex workers, and restarting reconnects to their journals. Interactive worktree shells and validation commands are not durable across daemon shutdown.
 
@@ -187,19 +224,13 @@ No Line Command databases, work repositories or source branches are imported or 
 
 ### Project browser
 
-In a coding chat, choose **Tools → Browser**, enter a website or local preview URL, approve its allowed origins, and open it. Fleet uses pinned `agent-browser` 0.36.0 with a separate ephemeral Chrome session per project (Chrome must be installed). The panel streams the actual page and supports navigation, tabs, click/type/paste/scroll, desktop/mobile viewports, screenshots, console output, network requests and page-text evidence. Evidence goes to a chat **draft**, never an automatic model turn.
+In Fleet Desktop, ask a project chat to open a website: its `navigate` tool automatically opens the native browser and reveals the Browser panel in that chat. You can also choose **Tools → Browser**, enter a website or local preview URL and click **Open browser**. Fleet renders Chromium directly inside the app at the screen’s native pixel density, with in-memory caching. This is the only browser: there is no streamed Chrome/headless mode, selector or fallback. Fleet Desktop must be running; web-only clients cannot render the native page.
 
-**Let this chat browse → Share browser** attaches a scoped MCP tool on the next chat turn. Reads need no further approval; each agent interaction waits for an explicit approval in this panel. **Take control** revokes access and queued actions; a command already sent to the page may finish. Other Fleet windows are observers until they take control. Closing the browser discards its ephemeral browsing state, not project files or chats. No extra AI service or model API key is involved.
+The user and the project's coding agents **share the same native page automatically**. There is no Connect, Take control or per-action Fleet approval. Agents can open, navigate, snapshot, click, fill, press keys, scroll and capture screenshots while your mouse and keyboard remain usable. Agent commands are serialized, but manual input is not locked; refresh a snapshot if the user changes a target. The toolbar shows whether the agent connection is live. New chat turns receive project-scoped tools automatically, including before a page is opened. Only `navigate` creates a missing page; stale element actions never reopen one. Desktop opening requests use the same authenticated, turn-scoped queue and are not replayed after a disconnect. Managed read-only reviewers do not receive browser controls.
 
-Only approved HTTP(S) origins can load, including any CDN/API origins entered at startup. The proxy checks exact origins/ports and pins DNS results; private-network destinations and Fleet's known internal ports are blocked, except explicitly approved loopback preview origins. Browser access is separate from Codex's filesystem sandbox and is **not** an OS sandbox or protection against a fully privileged local process. No personal profiles, arbitrary JavaScript, file upload/download, saved credentials or browser-state export tools are exposed. Do not use sensitive accounts for untrusted tasks. Site authentication compatibility, broad public-site coverage, downloads, IME input, audio/video and prolonged browser recovery are not certified in this version.
+Each native browser has its own temporary in-memory session. Switching chat tools hides the surface without closing it or disconnecting agents; reopening the tool restores that same page. Explicit close, opening another project's browser in that window, or quitting Fleet clears its cookies, cache and page state. Closing returns to native setup, not another browser. Public HTTP(S) navigation is supported; the DNS-pinning proxy blocks unrelated private-network destinations and Fleet’s internal ports. An explicitly selected loopback preview grants only its initial local origin. Remote pages have no preload, Node or privileged IPC access. Pop-ups, downloads and device permission prompts remain disabled. The current agent operations cover the main document, not iframe or closed-shadow controls; password and file inputs remain manual. No site-compatibility or challenge-bypass guarantee is made.
 
-Browsers close after 30 minutes without commands or visible-panel polling, or on normal daemon shutdown. A restart requires reopening and resharing; a worker that survives the daemon loses its browser connection. The raw browser control port and capability are not sent to the renderer/model prompt. CLI session configuration and worker metadata remain local; explicitly inserting evidence into a chat records it in that chat.
-
-Individual tab closing is deliberately disabled: our 0.36.0 integration test reproduced a network-control failure that reset remaining tabs. Create/switch/reuse tabs, or close the whole browser with confirmation. This is related to an [upstream disappearing-target/network-control issue](https://github.com/vercel-labs/agent-browser/issues/1651), although our reproduction uses tab closure rather than initial launch.
-
-Public sites can recognise headless Chrome and present rate limits or verification challenges. Google returned a 429/challenge during manual testing; Fleet does not promise undetected automation or bypass verification. Cookie dialogs and sign-in may also call separate origins that need explicit approval. For example, Google's consent flow called `https://consent.google.com` while only `https://www.google.com` was approved, so that request was blocked even though pointer input reached Chrome.
-
-Run `node tests/live-browser.mjs --run` for an isolated real-Chrome input/tab/stream and HTTP/WebSocket network-policy test. It uses no model calls or external websites and closes only its own browser. Test artifacts are retained in a printed temporary directory.
+Run `node tests/live-native-browser.mjs --run --ui --shared` to exercise the actual project browser and real stdio MCP adapter together: agent actions, interleaved native user input, stale references, isolation, resize and close. `--run --shared` additionally checks cache reuse and cleanup. Neither calls a model or accesses a user's current browser. `node tests/live-browser-tools.mjs --run` checks the installed Codex tool discovery at process startup and in a new thread without a model turn; persisted-thread resumption is fixture-tested only. Fleet configures the browser at worker startup and per-thread, with [automatic MCP tool approval](https://learn.chatgpt.com/docs/extend/mcp?surface=cli), without changing global user settings. Optional `--run --public --scroll-profile --repeat-scroll` diagnoses Shopify in a separate profile. See [browser measurements and historical experiments](BROWSER-MODES.md).
 
 ### Other checks
 

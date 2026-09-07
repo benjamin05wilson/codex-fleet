@@ -2,10 +2,15 @@ appId: dev.fleet.local
 productName: Fleet
 asar: true
 npmRebuild: false
+beforePack: scripts/prepare-tools.mjs
 files:
   - desktop/**
   - package.json
 extraResources:
+  - from: build/managed-tools
+    to: tools
+    filter:
+      - "**/*"
   - from: .
     to: runtime
     filter:
@@ -13,19 +18,40 @@ extraResources:
       - shared/**
       - cmd/**
       - dist/**
-      - node_modules/node-pty/**
-      - node_modules/node-addon-api/**
-  - from: node_modules/agent-browser
-    to: runtime/node_modules/agent-browser
+  # Explicit sources prevent electron-builder's default node_modules exclusion
+  # from dropping dependencies needed by the external Node daemon.
+  - from: node_modules/node-pty
+    to: runtime/node_modules/node-pty
     filter:
-      - bin/agent-browser-darwin-arm64
-      - LICENSE
-      - package.json
+      - "**/*"
+  - from: node_modules/node-addon-api
+    to: runtime/node_modules/node-addon-api
+    filter:
+      - "**/*"
 mac:
   icon: build/fleet.icns
   category: public.app-category.developer-tools
   target:
     - target: dir
       arch: arm64
+win:
+  icon: desktop/assets/fleet.ico
+  target:
+    - target: nsis
+      arch: x64
+  artifactName: Fleet-${version}-Windows-${arch}.${ext}
+nsis:
+  installerIcon: desktop/assets/fleet.ico
+  uninstallerIcon: desktop/assets/fleet.ico
+  installerHeader: desktop/assets/installer-header.bmp
+  installerSidebar: desktop/assets/installer-sidebar.bmp
+  uninstallerSidebar: desktop/assets/installer-sidebar.bmp
+  artifactName: Fleet-${version}-Windows-${arch}-Setup.${ext}
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false
 directories:
   output: release

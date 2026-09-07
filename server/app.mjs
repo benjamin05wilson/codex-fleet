@@ -27,15 +27,17 @@ import { Workflows, templates } from "./workflows.mjs";
 import { Teams, teamRoles, teamDefaults } from "./teams.mjs";
 import { searchWorkspace, previewFile } from "./search.mjs";
 import { onboardingSettings, saveOnboarding } from "./onboarding.mjs";
-import { Browsers } from "./browsers.mjs";
+import { NativeBrowserBroker } from "./native-browser-broker.mjs";
+import { commandInvocation } from "../shared/platform.mjs";
+import { CodexAuth } from "./auth.mjs";
 
 const exec = promisify(execFile);
-async function body(req) {
+async function body(req, maxBytes = 100_000) {
   if (req.fleetBody !== undefined) return req.fleetBody;
   let text = "";
   for await (const chunk of req) {
     text += chunk;
-    if (text.length > 100_000)
+    if (text.length > maxBytes)
       throw Object.assign(new Error("Request too large"), { status: 413 });
   }
   try {
@@ -51,6 +53,8 @@ export async function createApp({
   concurrency = 3,
   transport = "app-server",
   browserOptions,
+  browserFactory = (engine) => new NativeBrowserBroker(engine),
+  authFactory = (bin, cwd, options) => new CodexAuth(bin, cwd, options),
 }) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const store = new Store(join(dataDir, "fleet.sqlite"));
@@ -60,11 +64,29 @@ export async function createApp({
     concurrency,
     transport,
   });
+  const auth = authFactory(engine.bin, dataDir, {
+    onChange: () => {
+      discoveryCache = null;
+      statusAt = 0;
+    },
+    windowsSetup:
+      process.platform === "win32" && process.env.FLEET_MANAGED_TOOLS === "1",
+    sandboxReady: store
+      .list("preferences")
+      .some((p) => p.id === "windows-sandbox" && p.ready),
+    onSandboxReady: () =>
+      store.put("preferences", {
+        id: "windows-sandbox",
+        ready: true,
+        completedAt: now(),
+      }),
+  });
+  engine.auth = auth;
   const terminals = new Terminals(engine);
   engine.terminals = terminals;
   const previews = new Previews(engine);
   engine.previews = previews;
-  const browsers = new Browsers(engine, browserOptions);
+  const browsers = browserFactory(engine, browserOptions);
   engine.browsers = browsers;
   const workflows = new Workflows(store, engine);
   const teams = new Teams(store, engine, brain);
@@ -125,21 +147,24 @@ export async function createApp({
       authenticated = false,
       message = "Codex is not available in PATH.";
     try {
-      version = (
-        await exec(command, ["--version"], { timeout: 5000 })
-      ).stdout.trim();
+      const invoke = (args) => {
+        const call = commandInvocation(command, args);
+        return exec(call.bin, call.args, { timeout: 5000, windowsHide: true });
+      };
+      version = (await invoke(["--version"])).stdout.trim();
       try {
-        const result = await exec(command, ["login", "status"], {
-          timeout: 5000,
-        });
-        message = (result.stdout + result.stderr).trim();
-        authenticated = /logged in/i.test(message);
+        const account = await auth.read();
+        authenticated = account.authenticated;
+        message = authenticated
+          ? "Signed in to Codex."
+          : "Sign in to Codex to continue.";
       } catch {
-        message = "Run codex login in your terminal, then refresh.";
+        message = "Sign in to Codex to continue.";
       }
     } catch {}
     statusAt = Date.now();
     return (statusCache = {
+      ...auth.publicState(),
       version,
       authenticated,
       message,
@@ -247,6 +272,32 @@ export async function createApp({
       );
       const path = url.pathname;
       if (path.startsWith("/api/")) {
+        const nativeMatch = path.match(
+          /^\/api\/native-browser\/(register|launcher-register|next|result|close)$/,
+        );
+        if (nativeMatch) {
+          if (req.method !== "POST" || req.headers["x-fleet-token"] !== csrf) {
+            send({ error: "Native desktop authentication required." }, 403);
+            return;
+          }
+          const action = nativeMatch[1];
+          const input = await body(
+            req,
+            action === "result" ? 12500000 : 100000,
+          );
+          if (action === "register") send(browsers.register(input));
+          if (action === "launcher-register")
+            send(browsers.registerLauncher(input));
+          if (action === "result") send(browsers.result(input.token, input));
+          if (action === "close") send(browsers.disconnect(input.token));
+          if (action === "next") {
+            const controller = new AbortController();
+            res.once("close", () => controller.abort());
+            const command = await browsers.next(input.token, controller.signal);
+            if (!res.destroyed) send(command);
+          }
+          return;
+        }
         if (path === "/api/browser-agent" && req.method === "POST") {
           send(
             await browsers.agent(
@@ -288,6 +339,7 @@ export async function createApp({
         if (
           !["GET", "HEAD"].includes(req.method) &&
           req.headers["idempotency-key"] &&
+          !path.startsWith("/api/auth/") &&
           !/^\/api\/projects\/[^/]+\/browser(?:\/|$)/.test(path)
         ) {
           const key = String(req.headers["idempotency-key"]);
@@ -346,7 +398,7 @@ export async function createApp({
           }
         }
         const browserMatch = path.match(
-          /^\/api\/projects\/([^/]+)\/browser(?:\/(start|stop|control|take|grant|approve|frame|tabs))?$/,
+          /^\/api\/projects\/([^/]+)\/browser(?:\/(start|stop|control|take|grant|approve|frame|frames|tabs))?$/,
         );
         if (browserMatch) {
           if (req.headers["x-fleet-token"] !== csrf) {
@@ -365,6 +417,8 @@ export async function createApp({
             send(browsers.state(projectId, clientId));
           else if (req.method === "GET" && action === "frame")
             send(browsers.frame(projectId));
+          else if (req.method === "GET" && action === "frames")
+            browsers.streamFrames(projectId, res);
           else if (req.method === "GET" && action === "tabs")
             send(await browsers.tabs(projectId));
           else if (req.method === "POST") {
@@ -454,6 +508,30 @@ export async function createApp({
           });
           return;
         }
+        if (path.startsWith("/api/auth/")) {
+          if (req.headers["x-fleet-token"] !== csrf) {
+            send({ error: "Reload Fleet to sign in." }, 403);
+            return;
+          }
+          res.setHeader("Cache-Control", "no-store");
+          if (path === "/api/auth/status" && req.method === "GET")
+            send(await auth.read());
+          else if (path === "/api/auth/login" && req.method === "POST")
+            send(await auth.start());
+          else if (path === "/api/auth/cancel" && req.method === "POST") {
+            await auth.cancel();
+            send({ ok: true });
+          } else if (path === "/api/auth/refresh" && req.method === "POST") {
+            statusAt = 0;
+            send(await auth.read(true));
+          } else if (
+            path === "/api/auth/windows-setup" &&
+            req.method === "POST"
+          )
+            send(await auth.setupSandbox(await body(req)));
+          else send({ error: "Unknown sign-in action" }, 404);
+          return;
+        }
         if (req.method === "POST" && path === "/api/onboarding") {
           send(saveOnboarding(store, await body(req)));
           return;
@@ -470,7 +548,11 @@ export async function createApp({
             }));
           send({
             csrf,
-            browserAvailable: true,
+            browserAvailable: false,
+            browserMode: "native",
+            browserDesktopOnly: true,
+            browserAgentAvailable: true,
+            browserAutoOpenAvailable: !!browsers.launcher,
             onboarding: onboardingSettings(store),
             projects: store.list("project"),
             runs,
@@ -819,6 +901,7 @@ export async function createApp({
             return;
           }
           if (req.method === "POST" && action === "start") {
+            await auth.requireReady();
             const input = await body(req);
             send(engine.queue(key, input.prompt));
             return;
@@ -909,7 +992,13 @@ export async function createApp({
       });
       res.end(content);
     } catch (e) {
-      send({ error: redact(e.message) }, e.status || 400);
+      send(
+        {
+          error: redact(e.message),
+          ...(e.code === "CODEX_SIGN_IN_REQUIRED" ? { code: e.code } : {}),
+        },
+        e.status || 400,
+      );
     }
   });
   browsers.base = () =>
@@ -926,6 +1015,7 @@ export async function createApp({
     refreshInventories,
     close: async ({ preserveWorkers = false } = {}) => {
       closing = true;
+      auth.close();
       clearInterval(inventoryTimer);
       workflows.close();
       await teams.close();

@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { realpath, lstat, readFile, readlink, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { join, resolve, relative, isAbsolute } from "node:path";
+import pathUtils, { join, resolve, isAbsolute } from "node:path";
 
 const exec = promisify(execFile);
 export async function git(cwd, args) {
@@ -13,6 +13,7 @@ export async function git(cwd, args) {
       "core.hooksPath=/dev/null",
       "-c",
       "commit.gpgSign=false",
+      ...(process.platform === "win32" ? ["-c", "core.longpaths=true"] : []),
       "-C",
       cwd,
       ...args,
@@ -20,6 +21,7 @@ export async function git(cwd, args) {
     {
       maxBuffer: 8 * 1024 * 1024,
       timeout: 30_000,
+      windowsHide: true,
       env: {
         ...process.env,
         GIT_TERMINAL_PROMPT: "0",
@@ -49,11 +51,13 @@ export async function createWorktree(project, run, dataDir) {
   await git(project.path, ["worktree", "add", "-b", branch, path, head]);
   return { worktree: path, branch, base: head };
 }
-export function inside(root, path) {
-  const rel = relative(resolve(root), resolve(path));
+export function inside(root, path, paths = pathUtils) {
+  const rel = paths.relative(paths.resolve(root), paths.resolve(path));
   return (
     rel === "" ||
-    (!rel.startsWith(".." + "/") && rel !== ".." && !isAbsolute(rel))
+    (!rel.startsWith(".." + paths.sep) &&
+      rel !== ".." &&
+      !paths.isAbsolute(rel))
   );
 }
 export async function safeRead(root, path, limit = 160_000) {
