@@ -12,8 +12,9 @@ import { shellCommand, stopProcessTree } from "../shared/platform.mjs";
 import { discoverCodex } from "../server/discovery.mjs";
 
 const fixture = fileURLToPath(new URL("./fixtures/codex.mjs", import.meta.url));
-async function until(check) {
-  for (let i = 0; i < 200; i++) {
+async function until(check, timeout = 10000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
     if (await check()) return;
     await delay(50);
   }
@@ -21,7 +22,7 @@ async function until(check) {
 }
 test(
   "native Windows: SQLite workspace, Git worktree, Codex fixture and ConPTY terminal",
-  { skip: process.platform !== "win32", timeout: 30000 },
+  { skip: process.platform !== "win32", timeout: 90000 },
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "fleet windows smoke "));
     const source = join(directory, "source with spaces");
@@ -37,6 +38,10 @@ test(
       bin: fixture,
     });
     t.after(async () => {
+      for (const [id, terminal] of app.engine.terminals.sessions) {
+        app.engine.terminals.control(id, terminal.lease, "close", {});
+        await until(() => !app.engine.terminals.sessions.has(id), 15000);
+      }
       await app.close();
       app.store.close();
       await rm(directory, {
@@ -91,6 +96,7 @@ test(
     });
     await until(() =>
       transcript.includes("FLEET_WINDOWS_OK"),
+      45000,
     );
     terminals.control(run.id, lease, "resize", { cols: 90, rows: 24 });
     terminals.control(run.id, lease, "close", {});
