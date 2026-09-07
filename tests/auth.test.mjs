@@ -35,6 +35,17 @@ class Client extends EventEmitter {
     this.emit("closed");
   }
 }
+test("the subprocess Codex fixture supplies authentication without a machine login", async (t) => {
+  const auth = new CodexAuth(
+    fileURLToPath(new URL("./fixtures/codex.mjs", import.meta.url)),
+    tmpdir(),
+  );
+  t.after(() => auth.close());
+  const state = await auth.read(true);
+  assert.equal(state.available, true);
+  assert.equal(state.authenticated, true);
+  assert(!JSON.stringify(state).includes("must-not-be-exposed"));
+});
 test("sign-in is single-flight, exposes no account secrets and waits for confirmed login", async (t) => {
   const client = new Client();
   const auth = new CodexAuth("", "", { clientFactory: () => client });

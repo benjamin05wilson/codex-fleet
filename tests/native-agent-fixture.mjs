@@ -9,6 +9,8 @@ export async function createNativeAgentFixture() {
   const app = await createApp({
     dataDir: directory,
     staticDir: fileURLToPath(new URL("../dist", import.meta.url)),
+    // Never depend on a developer/runner's Codex install or personal login.
+    bin: fileURLToPath(new URL("./fixtures/codex.mjs", import.meta.url)),
   });
   app.store.put("preferences", {
     id: "onboarding",
