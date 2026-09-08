@@ -364,8 +364,9 @@ function ProjectDialog({
           </Field>
           <div className="form-note">
             <GitBranch size={16} />
-            Fleet creates worktrees for sessions. Uncommitted source changes are
-            not copied into them.
+            Fleet creates worktrees with your current source files, including
+            uncommitted changes. Ignored files and local credentials are
+            excluded.
           </div>
           {teamConfig && (
             <TeamApproval config={teamConfig} value={team} onChange={setTeam} />

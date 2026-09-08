@@ -21,6 +21,7 @@ export async function searchWorkspace(
       .list("project")
       .filter(
         (p) =>
+          !p.removedAt &&
           (!p.example || includeExamples || p.id === projectId) &&
           (!projectId || p.id === projectId),
       ),

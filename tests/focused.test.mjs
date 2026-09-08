@@ -24,6 +24,9 @@ import { createApp } from "../server/app.mjs";
 import { searchWorkspace, previewFile } from "../server/search.mjs";
 import { stopProcessTree } from "../shared/platform.mjs";
 const bin = fileURLToPath(new URL("./fixtures/codex.mjs", import.meta.url));
+const exitOnceBin = fileURLToPath(
+  new URL("./fixtures/codex-exit-once.mjs", import.meta.url),
+);
 await chmod(bin, 0o700);
 async function until(predicate, timeout = 15000) {
   const end = Date.now() + timeout;
@@ -261,6 +264,66 @@ test("successful follow-ups reuse the durable Codex and browser connection", asy
   );
   assert.equal(result.usage.input_tokens, 40);
   assert.equal(result.usage.output_tokens, 20);
+});
+test("worker retries one pre-initialization app-server exit without replaying a turn", async (t) => {
+  const w = await setup(t),
+    engine = w.createEngine();
+  engine.bin = exitOnceBin;
+  const run = engine.create(w.project.id, {
+    title: "Startup retry",
+    prompt: "TEST_EDIT",
+    sandbox: "workspace-write",
+  });
+  engine.queue(run.id);
+  await until(() => w.store.get("run", run.id).status === "review");
+  const result = w.store.get("run", run.id),
+    events = w.store.events({ runId: run.id });
+  assert.equal(result.attempt, 1);
+  assert.equal(
+    events.filter((event) => event.type === "turn.completed").length,
+    1,
+  );
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "worker.diagnostic" &&
+        /retrying once/.test(event.data.text),
+    ),
+  );
+});
+test("unreadable saved Codex thread is replaced before starting the turn", async (t) => {
+  const w = await setup(t),
+    engine = w.createEngine();
+  const run = engine.create(w.project.id, {
+    title: "Thread replacement",
+    prompt: "TEST_EDIT",
+    sandbox: "workspace-write",
+  });
+  w.store.patch("run", run.id, {
+    threadId: "fixture-exit-on-resume",
+    summary: "Prior context remains available.",
+  });
+  engine.queue(run.id, "TEST_EDIT replacement turn");
+  await until(() => w.store.get("run", run.id).status === "review");
+  const result = w.store.get("run", run.id),
+    events = w.store.events({ runId: run.id });
+  assert.equal(result.attempt, 1);
+  assert.equal(result.threadId, "fixture-thread");
+  assert.equal(
+    events.filter((event) => event.type === "turn.completed").length,
+    1,
+  );
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "worker.diagnostic" &&
+        /starting a replacement/.test(event.data.text),
+    ),
+  );
+  await delay(1000);
+  assert.equal(w.store.get("run", run.id).status, "review");
+  assert.equal(w.store.get("run", run.id).worker.persistent, true);
+  assert.equal(engine.processes.get(run.id).idle, true);
 });
 test("worker crash becomes interrupted and never automatically retries", async (t) => {
   const w = await setup(t),

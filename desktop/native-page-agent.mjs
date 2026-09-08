@@ -1,6 +1,6 @@
 // Fixed, application-owned DOM operations run in an isolated JS world. Tool
 // input is data, never JavaScript, CSS selectors, file paths or debugger calls.
-function pageOperation(input) {
+export function pageOperation(input) {
   const label = (el) =>
     (
       el.getAttribute("aria-label") ||
@@ -23,6 +23,7 @@ function pageOperation(input) {
   if (input.action === "snapshot") {
     const refs = new Map();
     const lines = [];
+    const links = {};
     let i = 0;
     for (const el of document.querySelectorAll(
       'a[href],button,input,textarea,select,summary,[role="button"],[role="link"],[contenteditable="true"]',
@@ -33,6 +34,13 @@ function pageOperation(input) {
         continue;
       const ref = "@e" + input.nonce + ++i;
       refs.set(ref, { el, signature: signature(el) });
+      if (el.hasAttribute("href")) {
+        try {
+          links[ref] = new URL(el.getAttribute("href"), document.baseURI).href;
+        } catch {
+          // Invalid and non-URL href values remain ordinary untrusted text.
+        }
+      }
       lines.push(
         `${ref} ${el.getAttribute("role") || el.tagName.toLowerCase()} ${label(el)}${el.disabled ? " [disabled]" : ""}`,
       );
@@ -47,8 +55,9 @@ function pageOperation(input) {
       url: location.href,
       text: (document.body?.innerText || "").slice(0, 22000),
       elements: lines,
+      links,
       scope:
-        "Main document only; iframe and closed-shadow controls are not exposed. Input values are omitted. References expire after navigation or another snapshot.",
+        "Main document only; iframe and closed-shadow controls are not exposed. Input values are omitted. References expire after navigation or another snapshot. Valid HTTP(S) link destinations appear in links and can be passed to navigate if a click is obscured; navigate still applies Fleet's network policy.",
     };
   }
   if (input.action === "scroll") {
@@ -88,7 +97,7 @@ function pageOperation(input) {
     top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
   if (!r.width || !r.height || !top || !(top === el || el.contains(top)))
     throw new Error(
-      "Element is obscured or not visible. Take a fresh snapshot.",
+      "Element is obscured or not visible. Take a fresh snapshot; if it is a link with an exposed destination, use navigate with that URL instead of retrying the click or pressing Tab.",
     );
   if (input.action === "click") {
     el.click();
@@ -230,6 +239,18 @@ export function createNativePageAgent({
         throw new Error(
           "Page navigated during snapshot. Take a fresh snapshot.",
         );
+      if (input.action === "snapshot") {
+        result.links = Object.fromEntries(
+          Object.entries(result.links || {}).flatMap(([ref, value]) => {
+            try {
+              if (!/^@e\d{1,30}$/.test(ref)) return [];
+              return [[ref, browserURL(value, forbiddenPorts).href]];
+            } catch {
+              return [];
+            }
+          }),
+        );
+      }
       return result;
     },
     close() {

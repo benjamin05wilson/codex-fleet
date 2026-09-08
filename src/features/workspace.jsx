@@ -434,6 +434,7 @@ export function WorkspaceSidebar({
   chooseProject,
   onNew,
   onDelete,
+  onDeleteProject,
   onTrash,
   trashCount = 0,
   busy,
@@ -480,6 +481,9 @@ export function WorkspaceSidebar({
       />
       <div className="project-groups">
         {groups.map((group) => {
+          const groupProject = state.projects.find(
+            (p) => p.id === group.projects[0],
+          );
           const runs = state.runs.filter(
             (r) =>
               group.projects.includes(r.projectId) &&
@@ -515,19 +519,25 @@ export function WorkspaceSidebar({
                 </button>
                 <button
                   className="project-name"
-                  title={
-                    state.projects.find((p) => p.id === group.projects[0])
-                      ?.path || group.name
-                  }
+                  title={groupProject?.path || group.name}
                   onClick={() => chooseProject(group.projects[0])}
                 >
                   {group.name}
                 </button>
+                {allProjects && group.id !== "scratch" && onDeleteProject && (
+                  <button
+                    className="project-delete-action icon-button"
+                    title="Remove project folder from Fleet"
+                    aria-label={`Remove project folder: ${group.name}`}
+                    disabled={busy}
+                    onClick={() => onDeleteProject(groupProject)}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )}
                 <NewWorkspaceMenu
                   compact
-                  project={state.projects.find(
-                    (p) => p.id === group.projects[0],
-                  )}
+                  project={groupProject}
                   onNew={onNew}
                   busy={busy}
                 />
@@ -630,6 +640,53 @@ export function DeleteSessionDialog({ run, onClose, onDelete, busy }) {
         </Button>
         <Button disabled={busy || !!reason} onClick={onDelete}>
           Delete {label}
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
+export function RemoveProjectDialog({
+  project,
+  runs,
+  onClose,
+  onRemove,
+  busy,
+}) {
+  const active = runs.some(
+    (run) =>
+      [
+        "queued",
+        "preparing",
+        "running",
+        "pausing",
+        "validating",
+        "accepting",
+      ].includes(run.status) ||
+      run.shellOpen ||
+      ["starting", "running", "stopping"].includes(run.preview?.status),
+  );
+  return (
+    <Dialog title="Remove project folder?" onClose={onClose}>
+      <p className="delete-session-copy">
+        Remove <strong>{project.name}</strong> and its conversations from All
+        projects?
+      </p>
+      <p className="notice">
+        The folder and its files will stay on your computer. Opening the same
+        folder again reconnects the project and restores its conversations.
+      </p>
+      {active && (
+        <p className="notice">
+          Stop this project’s active chats, terminals and previews first.
+        </p>
+      )}
+      <div className="dialog-actions">
+        <Button autoFocus disabled={busy} onClick={onClose}>
+          Cancel
+        </Button>
+        <Button disabled={busy || active} onClick={onRemove}>
+          Remove project
         </Button>
       </div>
     </Dialog>

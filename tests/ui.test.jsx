@@ -24,6 +24,7 @@ import {
 import { Preview } from "../src/features/preview.jsx";
 import { HomePage } from "../src/features/home.jsx";
 import { BrainView } from "../src/features/brain.jsx";
+import { buildFileTree, CodeExplorer } from "../src/features/code-explorer.jsx";
 import {
   createMotion,
   tickMotion,
@@ -1033,6 +1034,64 @@ test("horizontal project navigation keeps Home and switches sidebar scope withou
   expect(
     request.mock.calls.some(([, options]) => options?.method === "POST"),
   ).toBe(false);
+});
+test("All projects removes a complete project group after confirmation", async () => {
+  const user = userEvent.setup();
+  const projects = [
+    { id: "keep", name: "Keep", path: "/keep" },
+    { id: "remove", name: "Remove me", path: "/remove" },
+  ];
+  let removed = false;
+  const request = vi.fn(async (url, options) => {
+    if (url === "/api/projects/remove" && options?.method === "DELETE")
+      removed = true;
+    return {
+      ok: true,
+      json: async () =>
+        url === "/api/state"
+          ? {
+              ...emptyState,
+              projects: removed ? [projects[0]] : projects,
+              runs: [],
+            }
+          : { id: "remove", removedAt: new Date().toISOString() },
+    };
+  });
+  vi.stubGlobal("fetch", request);
+  render(<App />);
+  await user.click(
+    await screen.findByRole("button", { name: "Open Keep — /keep" }),
+  );
+  await user.click(screen.getByRole("button", { name: "All projects" }));
+  await user.click(
+    screen.getByRole("button", {
+      name: "Remove project folder: Remove me",
+    }),
+  );
+  const dialog = screen.getByRole("dialog", {
+    name: "Remove project folder?",
+  });
+  expect(
+    within(dialog).getByText(
+      /folder and its files will stay on your computer/i,
+    ),
+  ).toBeTruthy();
+  expect(
+    request.mock.calls.some(([, options]) => options?.method === "DELETE"),
+  ).toBe(false);
+  await user.click(
+    within(dialog).getByRole("button", { name: "Remove project" }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", {
+        name: "Remove project folder: Remove me",
+      }),
+    ).toBeNull(),
+  );
+  expect(
+    request.mock.calls.filter(([, options]) => options?.method === "DELETE"),
+  ).toHaveLength(1);
 });
 test("project tabs close without deleting work, persist across reload and reopen from plus", async () => {
   const user = userEvent.setup();
@@ -2224,6 +2283,99 @@ test("files open alongside the conversation and first instructions are not dupli
     screen.getByRole("textbox", { name: "Follow-up instruction" }),
   ).toBeTruthy();
   expect(localStorage.getItem("fleet.tool.workspace")).toBe("files");
+});
+
+test("project code explorer builds folders and opens current project files", async () => {
+  expect(
+    buildFileTree(["README.md", "src/ui/button.jsx", "src/app.js"]),
+  ).toEqual([
+    {
+      name: "src",
+      path: "src",
+      type: "folder",
+      children: [
+        {
+          name: "ui",
+          path: "src/ui",
+          type: "folder",
+          children: [
+            { name: "button.jsx", path: "src/ui/button.jsx", type: "file" },
+          ],
+        },
+        { name: "app.js", path: "src/app.js", type: "file" },
+      ],
+    },
+    { name: "README.md", path: "README.md", type: "file" },
+  ]);
+  const user = userEvent.setup();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url) => ({
+      ok: true,
+      json: async () =>
+        url.includes("?path=")
+          ? { path: "src/app.js", content: "const fleet = true;\n" }
+          : { files: ["README.md", "src/app.js", "src/ui/button.jsx"] },
+    })),
+  );
+  render(
+    <CodeExplorer
+      project={{ id: "project-code", name: "Fleet", path: "/projects/fleet" }}
+    />,
+  );
+  expect(await screen.findByText("README.md")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Expand src" }));
+  await user.click(screen.getByRole("button", { name: "Open src/app.js" }));
+  expect(await screen.findByText("const fleet = true;")).toBeTruthy();
+  expect(screen.getByText("READ ONLY")).toBeTruthy();
+  expect(localStorage.getItem("fleet.code-file.project-code")).toBe(
+    "src/app.js",
+  );
+  await user.type(
+    screen.getByRole("textbox", { name: "Find a project file" }),
+    "button",
+  );
+  expect(
+    screen.getByRole("button", { name: "Open src/ui/button.jsx" }),
+  ).toBeTruthy();
+  expect(screen.queryByText("README.md")).toBeNull();
+});
+
+test("the top project bar opens and closes the code explorer beside Brain", async () => {
+  const user = userEvent.setup();
+  const project = { id: "code-project", name: "Code project", path: "/code" };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url) => ({
+      ok: true,
+      json: async () =>
+        url === "/api/state"
+          ? { ...emptyState, projects: [project] }
+          : url.endsWith("/files")
+            ? { files: ["index.js"] }
+            : {},
+    })),
+  );
+  render(<App />);
+  await user.click(
+    await screen.findByRole("button", { name: /^Open Code project/ }),
+  );
+  const brain = screen.getByRole("button", { name: "Project brain" });
+  const code = screen
+    .getAllByRole("button", { name: "Project code" })
+    .find((button) => button.classList.contains("workspace-shortcut"));
+  expect(
+    Boolean(
+      brain.compareDocumentPosition(code) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ),
+  ).toBe(true);
+  await user.click(code);
+  expect(
+    await screen.findByRole("region", { name: "Code explorer" }),
+  ).toBeTruthy();
+  expect(code.getAttribute("aria-pressed")).toBe("true");
+  await user.click(code);
+  expect(screen.queryByRole("region", { name: "Code explorer" })).toBeNull();
 });
 test("idea-first setup keeps advanced controls collapsed and explicitly queues the first task", async () => {
   const save = vi.fn(),

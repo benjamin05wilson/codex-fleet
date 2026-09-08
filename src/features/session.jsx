@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { TeamReviews, TeamBadge } from "./team.jsx";
 import { SessionFiles, SessionOptions } from "./workspace.jsx";
 import { createRoot } from "react-dom/client";
@@ -137,6 +138,249 @@ import { Sentinel } from "./security.jsx";
 import { TerminalView } from "./terminal.jsx";
 import { Preview } from "./preview.jsx";
 import { ProjectBrowser } from "./browser.jsx";
+import { CodeExplorer } from "./code-explorer.jsx";
+import {
+  ChatProgress,
+  ChatSearch,
+  CopyButton,
+  CodeBlock,
+  useChatNavigation,
+} from "./chat-extras.jsx";
+
+function isToolActivity(event) {
+  return (
+    ["item.started", "item.completed"].includes(event.type) &&
+    [
+      "command_execution",
+      "commandExecution",
+      "file_change",
+      "fileChange",
+      "mcpToolCall",
+    ].includes(event.data.item?.type)
+  );
+}
+
+function fileDiff(change) {
+  const diff = change.diff || change.unified_diff || "";
+  let inHunk = false;
+  let added = 0;
+  let deleted = 0;
+  const lines = diff.split("\n").map((text) => {
+    let kind = "context";
+    if (text.startsWith("diff --git ")) inHunk = false;
+    if (text.startsWith("@@")) {
+      inHunk = true;
+      kind = "hunk";
+    } else if (text.startsWith("+") && (inHunk || !text.startsWith("+++"))) {
+      kind = "added";
+      added++;
+    } else if (text.startsWith("-") && (inHunk || !text.startsWith("---"))) {
+      kind = "deleted";
+      deleted++;
+    }
+    return { text, kind };
+  });
+  return { ...change, diff, lines, added, deleted };
+}
+
+function DiffCounts({ added, deleted }) {
+  return (
+    <span
+      className="diff-counts"
+      aria-label={`${added} lines added, ${deleted} lines deleted`}
+    >
+      <span className="diff-added">+{added}</span>
+      <span className="diff-deleted">−{deleted}</span>
+    </span>
+  );
+}
+
+function ToolActivity({ event, active, onOpenFile }) {
+  const item = event.data.item;
+  const command = ["command_execution", "commandExecution"].includes(item.type);
+  const files = ["file_change", "fileChange"].includes(item.type);
+  const running = event.type === "item.started" && active;
+  const exitCode = item.exit_code ?? item.exitCode;
+  const failed =
+    item.status === "failed" ||
+    item.error ||
+    (command && exitCode != null && exitCode !== 0);
+  const status = running
+    ? "Running"
+    : event.type === "item.started"
+      ? "Not completed"
+      : failed
+        ? "Failed"
+        : "Completed";
+  const output = item.aggregated_output ?? item.aggregatedOutput;
+  const changes = files ? (item.changes || []).map(fileDiff) : [];
+  const totals = changes.reduce(
+    (sum, change) => ({
+      added: sum.added + change.added,
+      deleted: sum.deleted + change.deleted,
+    }),
+    { added: 0, deleted: 0 },
+  );
+  return (
+    <div
+      className="message tool-activity"
+      data-event-seq={event.seq}
+      data-chat-search
+    >
+      <div className="tool-activity-heading">
+        {command ? (
+          <Terminal size={15} />
+        ) : files ? (
+          <FileCode2 size={15} />
+        ) : (
+          <Activity size={15} />
+        )}
+        <strong>
+          {command
+            ? "Command"
+            : files
+              ? "File edits"
+              : item.tool || "Tool call"}
+        </strong>
+        {files && changes.some((change) => change.diff) && (
+          <DiffCounts {...totals} />
+        )}
+        <span className={failed ? "amber" : ""}>{status}</span>
+        <time>{time(event.time)}</time>
+      </div>
+      {command && (
+        <CodeBlock>
+          <code className="language-bash">{item.command}</code>
+        </CodeBlock>
+      )}
+      {command && output && (
+        <details>
+          <summary>
+            View output{exitCode != null ? ` · exit ${exitCode}` : ""}
+          </summary>
+          <pre>{output}</pre>
+        </details>
+      )}
+      {files &&
+        changes.map((change, index) => (
+          <details key={`${change.path}-${index}`} open>
+            <summary>
+              <button
+                type="button"
+                className="chat-file-link"
+                onClick={(event) => {
+                  event.preventDefault();
+                  onOpenFile(
+                    change.path,
+                    Number(/@@.*?\+(\d+)/.exec(change.diff)?.[1]) || 1,
+                  );
+                }}
+              >
+                {change.path}
+              </button>{" "}
+              <span>
+                {typeof change.kind === "string"
+                  ? change.kind
+                  : change.kind?.type}
+              </span>
+              {change.diff && (
+                <DiffCounts added={change.added} deleted={change.deleted} />
+              )}
+            </summary>
+            {change.diff && (
+              <pre className="file-diff">
+                <code>
+                  {change.lines.map((line, lineIndex) => (
+                    <span
+                      className={`diff-line diff-line-${line.kind}`}
+                      key={lineIndex}
+                    >
+                      {line.text || " "}
+                    </span>
+                  ))}
+                </code>
+              </pre>
+            )}
+          </details>
+        ))}
+      {!command && !files && (
+        <details>
+          <summary>View tool details</summary>
+          <pre>
+            {JSON.stringify(
+              {
+                arguments: item.arguments,
+                result: item.result,
+                error: item.error,
+              },
+              null,
+              2,
+            )}
+          </pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function ActivityGroup({ events, active, onOpenFile }) {
+  const [expanded, setExpanded] = useState(false);
+  const previousActive = useRef(active);
+  const commands = events.filter((e) =>
+    ["command_execution", "commandExecution"].includes(e.data.item.type),
+  ).length;
+  const edits = events.filter((e) =>
+    ["file_change", "fileChange"].includes(e.data.item.type),
+  );
+  const paths = new Set(
+    edits.flatMap((e) =>
+      (e.data.item.changes || []).map((change) => change.path),
+    ),
+  );
+  const counts = edits
+    .flatMap((e) => (e.data.item.changes || []).map(fileDiff))
+    .reduce(
+      (total, change) => ({
+        added: total.added + change.added,
+        deleted: total.deleted + change.deleted,
+      }),
+      { added: 0, deleted: 0 },
+    );
+  useEffect(() => {
+    // Keep finished activity open if it was visible during this reply.
+    if (previousActive.current && !active) setExpanded(true);
+    previousActive.current = active;
+  }, [active]);
+  return (
+    <details
+      className="chat-activity-group"
+      open={active || expanded}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+    >
+      <summary>
+        <Activity size={14} />
+        <strong>Activity</strong>
+        <span>
+          {commands} command{commands === 1 ? "" : "s"} · {paths.size} file
+          {paths.size === 1 ? "" : "s"}
+          {events.length > commands + edits.length
+            ? ` · ${events.length - commands - edits.length} tools`
+            : ""}
+        </span>
+        {paths.size > 0 && <DiffCounts {...counts} />}
+        <ChevronDown size={14} />
+      </summary>
+      {events.map((event) => (
+        <ToolActivity
+          key={event.seq}
+          event={event}
+          active={active}
+          onOpenFile={onOpenFile}
+        />
+      ))}
+    </details>
+  );
+}
 
 function RunDetail({
   runId,
@@ -187,10 +431,25 @@ function RunDetail({
   );
   const [context, setContext] = useState(null);
   const [historyComplete, setHistoryComplete] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(null);
+  const historyLoadingRef = useRef(false);
+  const conversationRef = useRef(null);
+  const conversationContentRef = useRef(null);
+  const composerRef = useRef(null);
+  const [editingMessage, setEditingMessage] = useState(null);
+  const [requestedFile, setRequestedFile] = useState(null);
+  const [editorDirty, setEditorDirty] = useState(false);
+  const [fileError, setFileError] = useState("");
+  const navigation = useChatNavigation(
+    conversationRef,
+    conversationContentRef,
+    detail,
+    historyLoadingRef,
+  );
   useEffect(() => {
     localStorage.setItem(`fleet.draft.${runId}`, followup);
   }, [followup, runId]);
-  const [expanded, setExpanded] = useState({});
   const run = state.runs.find((r) => r.id === runId);
   useEffect(() => {
     let alive = true;
@@ -251,11 +510,24 @@ function RunDetail({
       </div>
     );
   const events = detail.events || [];
-  const messages = events.filter(
-    (e) =>
-      (e.type === "item.completed" && e.data.item?.type === "agent_message") ||
-      (e.type === "run.queued" && e.data.prompt && !e.data.initialInstruction),
-  );
+  const activityItems = new Map();
+  for (const event of events) {
+    if (!isToolActivity(event)) continue;
+    const key = event.data.item.id || event.seq;
+    const previous = activityItems.get(key);
+    activityItems.set(key, { ...event, seq: previous?.seq ?? event.seq });
+  }
+  const messages = [
+    ...events.filter(
+      (e) =>
+        (e.type === "item.completed" &&
+          e.data.item?.type === "agent_message") ||
+        (e.type === "run.queued" &&
+          e.data.prompt &&
+          !e.data.initialInstruction),
+    ),
+    ...activityItems.values(),
+  ].sort((a, b) => a.seq - b.seq);
   const lastMessageSeq = Math.max(
     0,
     ...events
@@ -269,21 +541,181 @@ function RunDetail({
     .filter((e) => e.type === "message.delta" && e.seq > lastMessageSeq)
     .map((e) => e.data.delta)
     .join("");
-  const commands = events.filter(
-    (e) =>
-      e.type === "item.completed" && e.data.item?.type === "command_execution",
-  );
   const findings = state.findings.filter(
     (f) => f.runId === runId && f.state === "suspected",
   );
   const isActive = activeStatuses.includes(run.status);
   const teamReviewer = run.teamRole && run.teamRole !== "developer";
-  const start = () =>
+  const submitMessage = (prompt, clearDraft = true) =>
     act(() =>
-      api(`/runs/${runId}/start`, "POST", { prompt: followup || undefined }),
+      api(`/runs/${runId}/start`, "POST", { prompt: prompt || undefined }),
     ).then((r) => {
-      if (r) setFollowup("");
+      if (r) {
+        navigation.jumpLatest();
+        if (clearDraft) {
+          setFollowup("");
+          setEditingMessage(null);
+        }
+      }
     });
+  const start = () => submitMessage(followup);
+  const canSend =
+    !busy &&
+    !isActive &&
+    ["draft", "review", "paused", "interrupted", "failed"].includes(
+      run.status,
+    ) &&
+    !teamReviewer &&
+    !run.teamInitial &&
+    !run.workflowId &&
+    !run.reviewOf &&
+    !run.shellOpen &&
+    !["starting", "running", "stopping"].includes(run.preview?.status);
+  const editMessage = (text) => {
+    setEditingMessage((current) => ({ draft: current?.draft ?? followup }));
+    setFollowup(text);
+    composerRef.current?.focus();
+  };
+  const openFile = (rawPath, line = 1) => {
+    try {
+      let path = decodeURIComponent(rawPath)
+        .replace(/^file:\/\/\/?/i, "")
+        .replaceAll("\\", "/");
+      const location = /(?:#L?|:)(\d+)(?::\d+)?$/.exec(path);
+      if (location) {
+        line = Number(location[1]);
+        path = path.slice(0, location.index);
+      }
+      if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
+      const root = (run.worktree || project.path)
+        .replaceAll("\\", "/")
+        .replace(/\/$/, "");
+      const windows = /^[A-Za-z]:\//.test(root);
+      if (
+        (windows ? path.toLowerCase() : path).startsWith(
+          (windows ? root.toLowerCase() : root) + "/",
+        )
+      )
+        path = path.slice(root.length + 1);
+      if (
+        /^(?:\/|[A-Za-z]:|[a-z]+:)/i.test(path) ||
+        path.split("/").includes("..")
+      )
+        throw new Error("This file is outside the session working folder.");
+      path = path.replace(/^\.\//, "");
+      setFileError("");
+      setRequestedFile({ path, line });
+    } catch (error) {
+      setFileError(error.message);
+    }
+  };
+  const closeFile = () => {
+    if (editorDirty && !window.confirm("Discard your unsaved file changes?"))
+      return;
+    setRequestedFile(null);
+    setEditorDirty(false);
+  };
+  const activityGroups = [];
+  for (const message of messages) {
+    const previous = activityGroups.at(-1);
+    if (isToolActivity(message) && previous?.kind === "activity")
+      previous.events.push(message);
+    else
+      activityGroups.push(
+        isToolActivity(message)
+          ? { kind: "activity", seq: message.seq, events: [message] }
+          : { kind: "message", seq: message.seq, event: message },
+      );
+  }
+  const lastUserSeq =
+    events.filter((event) => event.type === "run.queued").at(-1)?.seq || 0;
+  const phase =
+    events
+      .filter(
+        (event) => event.type === "worker.phase" && event.seq > lastUserSeq,
+      )
+      .at(-1)?.data.phase || (run.status === "queued" ? "Queued" : "Thinking");
+  const phaseSince =
+    events
+      .filter(
+        (event) =>
+          ["turn.started", "run.started"].includes(event.type) &&
+          event.seq > lastUserSeq,
+      )
+      .at(-1)?.time ||
+    run.startedAt ||
+    run.createdAt;
+  const loadHistory = async (all = false) => {
+    if (historyLoadingRef.current) return;
+    navigation.pauseFollow();
+    historyLoadingRef.current = true;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      let cursor = detail.events[0].seq;
+      let hasEarlierEvents = true;
+      const events = [];
+      while (hasEarlierEvents) {
+        const page = await api(`/runs/${runId}?before=${cursor}`);
+        events.unshift(...page.events);
+        hasEarlierEvents = page.hasEarlierEvents;
+        if (
+          (!all &&
+            page.events.some(
+              (event) =>
+                isToolActivity(event) ||
+                (event.type === "item.completed" &&
+                  event.data.item?.type === "agent_message") ||
+                (event.type === "run.queued" &&
+                  event.data.prompt &&
+                  !event.data.initialInstruction),
+            )) ||
+          !hasEarlierEvents
+        )
+          break;
+        const nextCursor = page.events[0]?.seq;
+        if (!nextCursor || nextCursor >= cursor)
+          throw new Error("Could not load earlier activity. Please retry.");
+        cursor = nextCursor;
+      }
+      const feed = conversationRef.current;
+      if (!feed) return;
+      const feedTop = feed.getBoundingClientRect().top;
+      const candidates = [...feed.querySelectorAll(".message[data-event-seq]")];
+      const anchor =
+        candidates.find(
+          (node) => node.getBoundingClientRect().bottom > feedTop,
+        ) || candidates[0];
+      const anchorTop = anchor?.getBoundingClientRect().top;
+      const previousScrollTop = feed.scrollTop;
+      // Commit and restore together, before paint or another live update.
+      flushSync(() => {
+        setDetail((current) => ({
+          ...current,
+          events: [
+            ...new Map(
+              [...events, ...current.events].map((e) => [e.seq, e]),
+            ).values(),
+          ].sort((a, b) => a.seq - b.seq),
+        }));
+        if (!hasEarlierEvents) setHistoryComplete(true);
+        setHistoryLoading(false);
+      });
+      const restoredAnchor =
+        anchor &&
+        feed.querySelector(`[data-event-seq="${anchor.dataset.eventSeq}"]`);
+      feed.scrollTop = restoredAnchor
+        ? previousScrollTop +
+          restoredAnchor.getBoundingClientRect().top -
+          anchorTop
+        : previousScrollTop;
+    } catch (error) {
+      setHistoryError(error.message);
+    } finally {
+      historyLoadingRef.current = false;
+      setHistoryLoading(false);
+    }
+  };
   const canConfigure =
     !teamReviewer &&
     !run.teamInitial &&
@@ -305,6 +737,25 @@ function RunDetail({
   };
   return (
     <div className="run-detail">
+      {requestedFile && (
+        <Dialog
+          title={requestedFile.path}
+          subtitle={`Session file · line ${requestedFile.line}`}
+          wide
+          onClose={closeFile}
+        >
+          <div className="chat-file-editor">
+            <CodeExplorer
+              key={`${runId}:${requestedFile.path}:${requestedFile.line}`}
+              project={{ ...project, path: run.worktree || project.path }}
+              runId={run.worktree ? runId : undefined}
+              initialFile={requestedFile.path}
+              initialLine={requestedFile.line}
+              onDirtyChange={setEditorDirty}
+            />
+          </div>
+        </Dialog>
+      )}
       {optionsOpen && (
         <SessionOptions
           run={run}
@@ -313,12 +764,15 @@ function RunDetail({
         />
       )}
       <div className="run-head">
-        <h2>{run.title}</h2>
-        {run.sessionKind && (
-          <span className="workspace-kind" title={run.worktree}>
-            {run.workspaceKind === "main" ? "Main folder" : run.branch}
-          </span>
-        )}
+        <div className="run-title-group">
+          <h2>{run.title}</h2>
+          {run.sessionKind && (
+            <span className="workspace-kind" title={run.worktree}>
+              <GitBranch size={11} />
+              {run.workspaceKind === "main" ? "Main folder" : run.branch}
+            </span>
+          )}
+        </div>
         {!["draft", "review", "accepted"].includes(run.status) && (
           <Status status={run.status} />
         )}
@@ -421,6 +875,14 @@ function RunDetail({
         className={`session-panes ${tab !== "conversation" ? "with-tool" : ""}`}
       >
         <section className="conversation-pane" aria-label="Codex conversation">
+          <ChatSearch
+            feedRef={conversationRef}
+            revision={`${events.length}:${events.at(-1)?.seq}`}
+            onNavigate={navigation.pauseFollow}
+            loading={historyLoading}
+            complete={!detail.hasEarlierEvents || historyComplete}
+            loadAll={() => loadHistory(true)}
+          />
           {run.sandbox === "danger-full-access" && (
             <div className="main-folder-context yolo-context">
               YOLO · no sandbox or approval prompts · commands can affect files
@@ -438,202 +900,245 @@ function RunDetail({
               <code title={run.worktree}>{run.worktree}</code>
             </div>
           )}
-          <div className="detail-scroll">
-            {run.error && (
-              <div className="notice error">
-                <AlertTriangle size={16} />
-                <div>
-                  <strong>Session needs attention</strong>
-                  <pre>{run.error}</pre>
-                </div>
-              </div>
-            )}
-            {detail.hasEarlierEvents && !historyComplete && (
-              <Button
-                onClick={async () => {
-                  const older = await act(() =>
-                    api(`/runs/${runId}?before=${detail.events[0].seq}`),
-                  );
-                  if (older) {
-                    setDetail((current) => ({
-                      ...current,
-                      events: [
-                        ...new Map(
-                          [...older.events, ...current.events].map((e) => [
-                            e.seq,
-                            e,
-                          ]),
-                        ).values(),
-                      ].sort((a, b) => a.seq - b.seq),
-                    }));
-                    if (!older.hasEarlierEvents) setHistoryComplete(true);
-                  }
-                }}
-              >
-                Load earlier activity
-              </Button>
-            )}
-            {run.status === "queued" && (
-              <div className="notice">
-                <Clock3 size={16} />
-                <div>
-                  Waiting for an available slot
-                  {run.dependencies.length
-                    ? " and accepted dependency tasks"
-                    : ""}
-                  .
-                  {state.limits
-                    ? `Up to ${state.limits.concurrency} Codex sessions run at once.`
-                    : "The daemon concurrency limit applies."}
-                </div>
-              </div>
-            )}
-            {!run.waitingForTask && (
-              <>
-                <div className="message user-message">
-                  <div className="message-label">
-                    <span className="avatar">Y</span>
-                    <strong>
-                      {run.teamRole &&
-                      run.initialPrompt?.startsWith("Initial read-only")
-                        ? "Fleet"
-                        : "You"}
-                    </strong>
-                    <span>{time(run.createdAt)}</span>
-                  </div>
-                  <div className="message-body">
-                    <MD>
-                      {run.initialPrompt ||
-                        (run.teamRole
-                          ? `Initial read-only project assessment as ${run.teamRole}.`
-                          : run.prompt)}
-                    </MD>
-                    {run.scopes.length > 0 && (
-                      <div className="scope-list">
-                        <span>Declared scope</span>
-                        {run.scopes.map((s) => (
-                          <code key={s}>{s}</code>
-                        ))}
-                      </div>
+          <div
+            ref={conversationRef}
+            className="detail-scroll conversation-feed"
+            onScroll={navigation.onScroll}
+          >
+            <div ref={conversationContentRef} className="conversation-content">
+              {(run.error ||
+                ["failed", "interrupted"].includes(run.status)) && (
+                <div className="notice error">
+                  <AlertTriangle size={16} />
+                  <div>
+                    <strong>Session needs attention</strong>
+                    <pre>{run.error || "The reply was interrupted."}</pre>
+                    {["failed", "interrupted"].includes(run.status) && (
+                      <Button
+                        icon={RefreshCw}
+                        disabled={!canSend}
+                        onClick={() =>
+                          submitMessage(run.followup || run.prompt, false)
+                        }
+                      >
+                        Retry reply
+                      </Button>
                     )}
                   </div>
                 </div>
-                {run.status === "draft" && (
-                  <div className="start-note">
-                    <GitBranch size={17} />
-                    <div>
-                      <strong>
-                        {run.sandbox === "danger-full-access"
-                          ? "YOLO runs outside the sandbox. This worktree does not restrict file or network access."
-                          : run.workspaceKind === "main"
-                            ? "Main working folder"
-                            : "Isolated worktree"}
-                      </strong>
-                      <p>
-                        {run.workspaceKind === "main"
-                          ? "This chat uses your original project folder, including uncommitted files. It does not create a branch or isolate changes."
-                          : run.worktree
-                            ? "This worktree is ready on its own branch. Uncommitted source changes were not copied."
-                            : "Starting creates a worktree from the latest committed revision. Your current uncommitted changes stay in the source repository."}
-                      </p>
-                      <span>
-                        {run.workspaceKind === "main"
-                          ? "Original files are shared with your other tools; Fleet does not isolate this chat."
-                          : run.sandbox === "read-only"
-                            ? "Codex can explore this worktree, but cannot edit source files."
-                            : "Codex can edit this worktree. Network access is disabled in its sandbox."}
-                      </span>
-                    </div>
+              )}
+              {detail.hasEarlierEvents && !historyComplete && (
+                <div className="history-load-row">
+                  <Button
+                    className="history-load"
+                    icon={historyLoading ? Loader2 : Clock3}
+                    disabled={historyLoading}
+                    onClick={() => loadHistory()}
+                  >
+                    {historyLoading
+                      ? "Loading earlier activity…"
+                      : "Load earlier activity"}
+                  </Button>
+                </div>
+              )}
+              {historyError && (
+                <div className="notice error" role="alert">
+                  {historyError}
+                </div>
+              )}
+              {fileError && (
+                <div className="notice error" role="alert">
+                  {fileError}
+                </div>
+              )}
+              {run.status === "queued" && (
+                <div className="notice">
+                  <Clock3 size={16} />
+                  <div>
+                    Waiting for an available slot
+                    {run.dependencies.length
+                      ? " and accepted dependency tasks"
+                      : ""}
+                    .
+                    {state.limits
+                      ? `Up to ${state.limits.concurrency} Codex sessions run at once.`
+                      : "The daemon concurrency limit applies."}
                   </div>
-                )}
-                {commands.length > 0 && (
-                  <div className="command-group">
-                    <button
-                      aria-expanded={!!expanded.commands}
-                      onClick={() =>
-                        setExpanded({
-                          ...expanded,
-                          commands: !expanded.commands,
-                        })
-                      }
+                </div>
+              )}
+              {!run.waitingForTask && (
+                <>
+                  {(!detail.hasEarlierEvents || historyComplete) && (
+                    <div
+                      className="message user-message"
+                      data-event-seq="initial"
+                      data-chat-search
                     >
-                      <Terminal size={14} />
-                      {commands.length} command
-                      {commands.length === 1 ? "" : "s"} executed
-                      <ChevronDown size={14} />
-                    </button>
-                    {expanded.commands &&
-                      commands.map((e) => (
-                        <details className="terminal-entry" key={e.seq}>
-                          <summary className="command-line">
-                            <span
-                              className={
-                                e.data.item.exit_code === 0 ? "green" : "amber"
+                      <div className="message-label">
+                        <span className="avatar">Y</span>
+                        <strong>
+                          {run.teamRole &&
+                          run.initialPrompt?.startsWith("Initial read-only")
+                            ? "Fleet"
+                            : "You"}
+                        </strong>
+                        <span>{time(run.createdAt)}</span>
+                      </div>
+                      <div className="message-body">
+                        <MD onFile={openFile}>
+                          {run.initialPrompt ||
+                            (run.teamRole
+                              ? `Initial read-only project assessment as ${run.teamRole}.`
+                              : run.prompt)}
+                        </MD>
+                        <div className="chat-message-actions">
+                          <CopyButton text={run.initialPrompt || run.prompt} />
+                          {!teamReviewer && !run.teamInitial && (
+                            <button
+                              type="button"
+                              disabled={!canSend}
+                              onClick={() =>
+                                editMessage(run.initialPrompt || run.prompt)
                               }
                             >
-                              {e.data.item.exit_code === 0 ? "✓" : "!"}
-                            </span>
-                            <code>{e.data.item.command}</code>
-                            <span>{e.data.item.exit_code ?? "—"}</span>
-                          </summary>
-                          <pre>
-                            {e.data.item.aggregated_output ||
-                              "No output recorded."}
-                          </pre>
-                        </details>
-                      ))}
-                  </div>
-                )}
-                {messages.map((e) => (
-                  <div className="message" key={e.seq}>
-                    <div className="message-label">
-                      <span className="avatar codex-avatar">
-                        <Mark small />
-                      </span>
-                      <strong>
-                        {e.type === "run.queued"
-                          ? e.data.source === "team"
-                            ? "Fleet"
-                            : "You"
-                          : "Codex"}
-                      </strong>
-                      <span>{time(e.time)}</span>
+                              <Pencil size={13} />
+                              Edit & resend
+                            </button>
+                          )}
+                        </div>
+                        {run.scopes.length > 0 && (
+                          <div className="scope-list">
+                            <span>Declared scope</span>
+                            {run.scopes.map((s) => (
+                              <code key={s}>{s}</code>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    <div className="message-body">
-                      <MD>{e.data.prompt || e.data.item?.text}</MD>
+                  )}
+                  {run.status === "draft" && (
+                    <div className="start-note">
+                      <GitBranch size={17} />
+                      <div>
+                        <strong>
+                          {run.sandbox === "danger-full-access"
+                            ? "YOLO runs outside the sandbox. This worktree does not restrict file or network access."
+                            : run.workspaceKind === "main"
+                              ? "Main working folder"
+                              : "Isolated worktree"}
+                        </strong>
+                        <p>
+                          {run.workspaceKind === "main"
+                            ? "This chat uses your original project folder, including uncommitted files. It does not create a branch or isolate changes."
+                            : run.worktree
+                              ? "This worktree is ready on its own branch. Changes made here stay in this working folder."
+                              : "Starting creates a worktree with your current source files and uncommitted changes. Ignored files and local credentials are excluded."}
+                        </p>
+                        <span>
+                          {run.workspaceKind === "main"
+                            ? "Original files are shared with your other tools; Fleet does not isolate this chat."
+                            : run.sandbox === "read-only"
+                              ? "Codex can explore this worktree, but cannot edit source files."
+                              : "Codex can edit this worktree. Network access is disabled in its sandbox."}
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                ))}
-                {isActive && streaming && (
-                  <div className="message">
-                    <div className="message-body">
-                      <MD>{streaming}</MD>
+                  )}
+                  {activityGroups.map((entry) => {
+                    if (entry.kind === "activity")
+                      return (
+                        <ActivityGroup
+                          key={entry.seq}
+                          events={entry.events}
+                          active={isActive && entry.seq > lastUserSeq}
+                          onOpenFile={openFile}
+                        />
+                      );
+                    const e = entry.event;
+                    const fromUser =
+                      e.type === "run.queued" && e.data.source !== "team";
+                    return (
+                      <div
+                        className={`message ${fromUser ? "user-message" : "codex-message"}`}
+                        key={e.seq}
+                        data-event-seq={e.seq}
+                        data-chat-search
+                      >
+                        <div className="message-label">
+                          <span
+                            className={`avatar ${fromUser ? "" : "codex-avatar"}`}
+                          >
+                            {fromUser ? "Y" : <Mark small />}
+                          </span>
+                          <strong>
+                            {e.type === "run.queued"
+                              ? e.data.source === "team"
+                                ? "Fleet"
+                                : "You"
+                              : "Codex"}
+                          </strong>
+                          <span>{time(e.time)}</span>
+                        </div>
+                        <div className="message-body">
+                          <MD onFile={openFile}>
+                            {e.data.prompt || e.data.item?.text}
+                          </MD>
+                          <div className="chat-message-actions">
+                            <CopyButton
+                              text={e.data.prompt || e.data.item?.text || ""}
+                            />
+                            {fromUser && (
+                              <button
+                                type="button"
+                                disabled={!canSend}
+                                onClick={() => editMessage(e.data.prompt)}
+                              >
+                                <Pencil size={13} />
+                                Edit & resend
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {isActive && streaming && (
+                    <div className="message codex-message streaming-message">
+                      <div className="message-label">
+                        <span className="avatar codex-avatar">
+                          <Mark small />
+                        </span>
+                        <strong>Codex</strong>
+                        <span>Now</span>
+                      </div>
+                      <div className="message-body">
+                        <MD onFile={openFile}>{streaming}</MD>
+                      </div>
                     </div>
-                  </div>
-                )}
-                {isActive && (
-                  <div className="working-message">
-                    <span className="working-dot" />
-                    {events
-                      .filter(
-                        (e) =>
-                          e.type === "worker.phase" &&
-                          Date.parse(e.time) >= Date.parse(run.startedAt || 0),
-                      )
-                      .at(-1)?.data.phase || "Codex is working"}
-                    <span>Events appear as they arrive</span>
-                  </div>
-                )}
-              </>
-            )}
+                  )}
+                  {isActive && (
+                    <ChatProgress phase={phase} since={phaseSince} />
+                  )}
+                </>
+              )}
 
-            {run.waitingForTask && (
-              <div className="conversation-empty">
-                <h3>What are we working on?</h3>
-                <p>Send an instruction to start.</p>
-              </div>
-            )}
+              {run.waitingForTask && (
+                <div className="conversation-empty">
+                  <h3>What are we working on?</h3>
+                  <p>Send an instruction to start.</p>
+                </div>
+              )}
+            </div>
           </div>
+          {navigation.away && (
+            <div className="chat-jump-row">
+              <button type="button" onClick={navigation.jumpLatest}>
+                <ChevronDown size={15} />
+                Jump to latest
+              </button>
+            </div>
+          )}
           {!teamReviewer &&
             !run.teamInitial &&
             [
@@ -654,7 +1159,22 @@ function RunDetail({
                   start();
                 }}
               >
+                {editingMessage && (
+                  <div className="chat-edit-banner">
+                    <span>Edit & resend · sends a new message</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFollowup(editingMessage.draft);
+                        setEditingMessage(null);
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
                 <textarea
+                  ref={composerRef}
                   rows={2}
                   maxLength={30000}
                   autoFocus={run.waitingForTask}
@@ -718,7 +1238,11 @@ function RunDetail({
                         run.preview?.status,
                       )
                     }
-                    aria-label="Send follow-up"
+                    aria-label={
+                      editingMessage
+                        ? "Send edited follow-up"
+                        : "Send follow-up"
+                    }
                   >
                     <ArrowRight size={17} />
                   </button>

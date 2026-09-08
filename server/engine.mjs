@@ -92,8 +92,14 @@ export class Engine {
     this.scans = new Set();
     this.busy = false;
     this.closing = false;
+    const removedProjects = new Set(
+      store
+        .list("project")
+        .filter((project) => project.removedAt)
+        .map((project) => project.id),
+    );
     for (const run of store.list("run"))
-      if (!run.deletedAt) {
+      if (!run.deletedAt && !removedProjects.has(run.projectId)) {
         if (
           run.worker &&
           (["running", "pausing"].includes(run.status) ||
@@ -115,7 +121,7 @@ export class Engine {
     this.timer = setInterval(() => this.tick().catch(() => {}), 800);
     this.scanTimer = setInterval(() => this.scanActive(), 4000);
     for (const run of store.list("run")) {
-      if (run.deletedAt) continue;
+      if (run.deletedAt || removedProjects.has(run.projectId)) continue;
       if (run.worktree) this.watchWorktree(run);
       if (run.shellOpen) {
         store.patch("run", run.id, { shellOpen: false, validation: null });
@@ -126,7 +132,9 @@ export class Engine {
     }
   }
   create(projectId, input) {
-    this.store.get("project", projectId);
+    const project = this.store.get("project", projectId);
+    if (project.removedAt)
+      throw new Error("Open this project folder again before creating a chat.");
     if (!input.title?.trim() || !input.prompt?.trim())
       throw new Error("A title and task are required.");
     if (input.title.length > 160 || input.prompt.length > 30_000)
@@ -177,6 +185,8 @@ export class Engine {
   }
   queue(key, followup, { teamManaged = false } = {}) {
     let run = this.store.get("run", key);
+    if (this.store.get("project", run.projectId).removedAt)
+      throw new Error("Open this project folder again before continuing.");
     if (run.sessionKind === "terminal")
       throw new Error("This is a terminal, not a Codex conversation.");
     if (run.waitingForTask) {
@@ -246,7 +256,12 @@ export class Engine {
       for (const run of this.store
         .list("run")
         .reverse()
-        .filter((r) => !r.deletedAt && r.status === "queued")) {
+        .filter(
+          (r) =>
+            !r.deletedAt &&
+            r.status === "queued" &&
+            !this.store.get("project", r.projectId).removedAt,
+        )) {
         if (this.processes.get(run.id)?.releasing) continue;
         if (
           [...this.processes.values()].filter((state) => !state.idle).length >=
@@ -1041,32 +1056,6 @@ export class Engine {
   }
   assertIdleWorktree(run, { allowTeamReaders = true } = {}) {
     validatePermissions(run);
-    if (
-      run.sandbox === "danger-full-access" &&
-      (this.terminals?.opening.size || this.previews?.opening.size)
-    )
-      throw new Error(
-        "Wait for the opening shell or preview, then close it before starting YOLO.",
-      );
-    if (
-      this.store
-        .list("run")
-        .some(
-          (other) =>
-            other.id !== run.id &&
-            !other.deletedAt &&
-            (run.sandbox === "danger-full-access" ||
-              other.sandbox === "danger-full-access") &&
-            ([...ACTIVE, "queued"].includes(other.status) ||
-              other.shellOpen ||
-              ["starting", "running", "stopping"].includes(
-                other.preview?.status,
-              )),
-        )
-    )
-      throw new Error(
-        "YOLO runs need exclusive access. Stop other Fleet agents, shells and previews first.",
-      );
     if (run.deletedAt)
       throw new Error("Restore this chat from Trash before using it.");
     if (this.previews?.has(run.worktree))

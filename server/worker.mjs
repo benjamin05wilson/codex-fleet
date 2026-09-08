@@ -34,7 +34,8 @@ let seq = 0,
   timer,
   deadline;
 let currentRun = config.run;
-const client = new CodexClient(config.bin, config.run.worktree, config.browser);
+let bootstrapping = true;
+let client = new CodexClient(config.bin, config.run.worktree, config.browser);
 const append = (event) =>
   appendFileSync(
     join(directory, "events.jsonl"),
@@ -135,24 +136,24 @@ timer = setInterval(() => {
     );
 }, 500);
 let usage = {};
-client.on("diagnostic", (text) =>
-  append({ type: "worker.diagnostic", text: redact(text).slice(-2000) }),
-);
-client.on("closed", (error) => {
-  if (!finished) finish(1, error.message);
-});
-client.on("notification", ({ method, params: p }) => {
+const notification = ({ method, params: p }) => {
   if (method === "turn/started") {
     turnId = p.turn.id;
     append({ type: "turn.started" });
     append({ type: "worker.phase", phase: "Thinking" });
   } else if (
     method === "item/started" &&
-    ["mcpToolCall", "commandExecution"].includes(p.item?.type)
+    ["mcpToolCall", "commandExecution", "fileChange"].includes(p.item?.type)
   ) {
+    append({ type: "item.started", item: p.item });
     append({
       type: "worker.phase",
-      phase: p.item.type === "mcpToolCall" ? "Using tools" : "Running command",
+      phase:
+        p.item.type === "mcpToolCall"
+          ? "Using tools"
+          : p.item.type === "fileChange"
+            ? "Editing files"
+            : "Running command",
     });
   } else if (method === "thread/tokenUsage/updated") {
     const u = p.tokenUsage?.last || {};
@@ -204,7 +205,25 @@ client.on("notification", ({ method, params: p }) => {
     });
   } else if (method === "item/agentMessage/delta")
     append({ type: "message.delta", itemId: p.itemId, delta: p.delta });
-});
+};
+const bindClient = (owned) => {
+  owned.on("diagnostic", (text) =>
+    append({ type: "worker.diagnostic", text: redact(text).slice(-2000) }),
+  );
+  owned.on("closed", (error) => {
+    if (owned === client && !bootstrapping && !finished)
+      finish(1, error.message);
+  });
+  owned.on("notification", notification);
+};
+const replaceClient = () => {
+  const previous = client;
+  previous.removeAllListeners();
+  previous.close();
+  client = new CodexClient(config.bin, config.run.worktree, config.browser);
+  bindClient(client);
+};
+bindClient(client);
 const optionsFor = (run) => ({
   cwd: run.worktree,
   approvalPolicy: "never",
@@ -268,27 +287,70 @@ const resume = async () => {
     commandBusy = false;
   }
 };
+const connect = async () => {
+  try {
+    return await client.connect();
+  } catch (error) {
+    if (!/Codex app-server exited \(/i.test(error.message)) throw error;
+    append({
+      type: "worker.diagnostic",
+      text: "Codex app-server exited before initialization; retrying once.",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    replaceClient();
+    return client.connect();
+  }
+};
+const bootstrap = async () => {
+  await connect();
+  const open = async (resumeThread) => {
+    const result = await client.request(
+      resumeThread ? "thread/resume" : "thread/start",
+      {
+        ...optionsFor(currentRun),
+        ...(resumeThread ? { threadId: currentRun.threadId } : {}),
+      },
+    );
+    const nextThreadId = result.thread.id;
+    if (config.browser) {
+      append({ type: "worker.phase", phase: "Connecting project browser" });
+      await verifyBrowserTool(client, nextThreadId);
+    }
+    return { result, threadId: nextThreadId };
+  };
+  try {
+    return { ...(await open(!!currentRun.threadId)), replaced: false };
+  } catch (error) {
+    if (
+      !currentRun.threadId ||
+      !/Codex app-server exited \(/i.test(error.message)
+    )
+      throw error;
+    append({
+      type: "worker.diagnostic",
+      text: "Saved Codex thread could not be resumed; starting a replacement before this turn.",
+    });
+    replaceClient();
+    await connect();
+    return { ...(await open(false)), replaced: true };
+  }
+};
 try {
   append({ type: "worker.phase", phase: "Connecting to Codex" });
-  await client.connect();
-  const result = await client.request(
-    currentRun.threadId ? "thread/resume" : "thread/start",
-    {
-      ...optionsFor(currentRun),
-      ...(currentRun.threadId ? { threadId: currentRun.threadId } : {}),
-    },
-  );
-  threadId = result.thread.id;
-  if (config.browser) {
-    append({ type: "worker.phase", phase: "Connecting project browser" });
-    await verifyBrowserTool(client, threadId);
-  }
+  const boot = await bootstrap();
+  const result = boot.result;
+  threadId = boot.threadId;
+  bootstrapping = false;
   append({
     type: "thread.started",
     thread_id: threadId,
     session_id: result.thread.sessionId,
   });
-  await startTurn(config.prompt, currentRun);
+  const prompt = boot.replaced
+    ? `Fleet had to replace an unreadable saved Codex thread before this turn. Preserve continuity using this limited trusted session context:\nOriginal user task: ${(currentRun.prompt || "").slice(0, 6000)}\nPrior assistant handoff: ${(currentRun.summary || "None").slice(0, 8000)}\n\n${config.prompt}`
+    : config.prompt;
+  await startTurn(prompt, currentRun);
 } catch (error) {
+  bootstrapping = false;
   finish(1, error.message);
 }

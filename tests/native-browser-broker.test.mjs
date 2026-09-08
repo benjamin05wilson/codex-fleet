@@ -97,11 +97,12 @@ test("cross-project, stale worker and completed-turn capabilities cannot dispatc
   assert.equal(broker.desktop(desktop.token).projectId, "one");
   assert.equal(broker.desktop(desktop.token).queue.length, 0);
 });
-test("commands have no broker deadline and the page survives between chat turns", async (t) => {
+test("commands and desktop sessions have no deadline, and the page survives between chat turns", async (t) => {
   const { broker, connection, runs, desktop } = fixture(t),
     firstConnection = connection("a"),
     pending = broker.agent(firstConnection.token, { action: "snapshot" });
   runs.get("a").worker.persistent = true;
+  assert.equal("lease" in broker.desktop(desktop.token), false);
   const command = await broker.next(
     desktop.token,
     new AbortController().signal,

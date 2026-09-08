@@ -719,8 +719,11 @@ test("typing and scrolling avoid redundant native URL lookups", async (t) => {
 });
 test("browser routing shares native access automatically and missing tools fail closed", async () => {
   assert.match(browserTool.description, /same native project browser/);
+  assert.match(browserTool.description, /navigate directly/);
   assert.match(browserInstructions(false), /This chat has no browser tool/);
   assert.match(browserInstructions(true), /never fall back/);
+  assert.match(browserInstructions(true), /do not retry the same click/);
+  assert.match(browserInstructions(true), /URL and network policy/);
   const requests = [];
   await verifyBrowserTool(
     {

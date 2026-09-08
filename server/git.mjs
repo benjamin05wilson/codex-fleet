@@ -1,6 +1,15 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { realpath, lstat, readFile, readlink, mkdir } from "node:fs/promises";
+import {
+  realpath,
+  lstat,
+  readFile,
+  readlink,
+  mkdir,
+  copyFile,
+  unlink,
+} from "node:fs/promises";
+import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import pathUtils, { join, resolve, isAbsolute } from "node:path";
 
@@ -49,7 +58,149 @@ export async function createWorktree(project, run, dataDir) {
   const branch = `fleet/${run.id.slice(0, 8)}`;
   const head = (await git(project.path, ["rev-parse", "HEAD"])).trim();
   await git(project.path, ["worktree", "add", "-b", branch, path, head]);
-  return { worktree: path, branch, base: head };
+  const inherited = await seedWorktree(project.path, path, {
+    missingOnly: false,
+  });
+  return {
+    worktree: path,
+    branch,
+    base: head,
+    inheritedSourceFiles: inherited.copied,
+  };
+}
+
+// New worktrees start with the user's current source, including untracked files.
+// Existing worktrees can be repaired in missing-only mode without replacing edits.
+export async function seedWorktree(
+  sourcePath,
+  targetPath,
+  { missingOnly = true } = {},
+) {
+  const sourceRoot = await realpath(sourcePath);
+  const targetRoot = await realpath(targetPath);
+  if (sourceRoot.toLowerCase() === targetRoot.toLowerCase())
+    throw new Error("Source and worktree must be different folders.");
+  const sourceGit = (
+    await git(sourceRoot, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-common-dir",
+    ])
+  ).trim();
+  const targetGit = (
+    await git(targetRoot, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-common-dir",
+    ])
+  ).trim();
+  if ((await realpath(sourceGit)) !== (await realpath(targetGit)))
+    throw new Error("The worktree does not belong to this project.");
+  const files = [
+    ...new Set(
+      (
+        await git(sourceRoot, [
+          "ls-files",
+          "-z",
+          "--cached",
+          "--others",
+          "--exclude-standard",
+        ])
+      )
+        .split("\0")
+        .filter(Boolean),
+    ),
+  ];
+  if (!missingOnly) {
+    const currentFiles = new Set(files);
+    const committed = (await git(sourceRoot, ["ls-tree", "-r", "--name-only", "-z", "HEAD"])).split("\0").filter(Boolean);
+    for (const path of committed) if (!currentFiles.has(path)) files.push(path);
+  }
+  const copied = [];
+  const skipped = [];
+  const allowed = (path) =>
+    !path
+      .split("/")
+      .some((part) =>
+        /^(?:\.git|\.fleet|\.claude-flow|\.playwright-mcp|\.ssh|\.aws|\.env(?:\..*)?|\.npmrc|\.netrc|node_modules|vendor|credentials?(?:[._-].*)?|secrets?(?:[._-].*)?|id_rsa|id_ed25519)$/i.test(
+          part,
+        ),
+      ) && !/\.(?:pem|key|p12)$/i.test(path);
+  const safeParent = async (root, path, create) => {
+    let current = root;
+    for (const part of path.split("/").slice(0, -1)) {
+      current = join(current, part);
+      let stat = await lstat(current).catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+        return null;
+      });
+      if (!stat && create) {
+        await mkdir(current);
+        stat = await lstat(current);
+      }
+      if (
+        !stat?.isDirectory() ||
+        stat.isSymbolicLink() ||
+        !inside(root, await realpath(current))
+      )
+        return false;
+    }
+    return true;
+  };
+  for (const path of files) {
+    const source = resolve(sourceRoot, path);
+    const target = resolve(targetRoot, path);
+    if (
+      !allowed(path) ||
+      !inside(sourceRoot, source) ||
+      !inside(targetRoot, target) ||
+      path.split("/").includes("..")
+    ) {
+      skipped.push(path);
+      continue;
+    }
+    const stat = await lstat(source).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+      return null;
+    });
+    if (!stat) {
+      // Reflect deletions only in a newly created worktree, never during repair.
+      if (!missingOnly && (await safeParent(targetRoot, path, false))) {
+        const existing = await lstat(target).catch((error) => {
+          if (error.code !== "ENOENT") throw error;
+          return null;
+        });
+        if (existing?.isFile() && !existing.isSymbolicLink())
+          await unlink(target);
+      }
+      continue;
+    }
+    if (
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
+      !(await safeParent(sourceRoot, path, false)) ||
+      !(await safeParent(targetRoot, path, true))
+    ) {
+      skipped.push(path);
+      continue;
+    }
+    const existing = await lstat(target).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+      return null;
+    });
+    if (
+      existing &&
+      (missingOnly || !existing.isFile() || existing.isSymbolicLink())
+    )
+      continue;
+    try {
+      await copyFile(source, target, missingOnly ? constants.COPYFILE_EXCL : 0);
+      copied.push(path);
+    } catch (error) {
+      if (!(missingOnly && error.code === "EEXIST")) throw error;
+    }
+  }
+  return { copied, skipped };
 }
 export function inside(root, path, paths = pathUtils) {
   const rel = paths.relative(paths.resolve(root), paths.resolve(path));

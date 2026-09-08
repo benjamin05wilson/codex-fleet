@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import Markdown from "react-markdown";
+import Markdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { CodeBlock } from "./features/chat-extras.jsx";
 import {
   ArrowUpRight,
   ArrowRight,
@@ -175,18 +176,28 @@ function Empty({ icon: Icon = Layers, title, children, action }) {
     </div>
   );
 }
-function MD({ children, onLink }) {
+function MD({ children, onLink, onFile }) {
   return (
     <div className="markdown">
       <Markdown
         remarkPlugins={[remarkGfm]}
+        urlTransform={(url) =>
+          onFile && /^(?:[A-Za-z]:[\\/]|file:)/i.test(url)
+            ? url
+            : defaultUrlTransform(url)
+        }
         components={{
+          pre: CodeBlock,
           a: ({ href, children }) =>
             href?.startsWith("#note:") ? (
               <button
                 className="wiki-link"
                 onClick={() => onLink?.(decodeURIComponent(href.slice(6)))}
               >
+                {children}
+              </button>
+            ) : onFile && href && !/^(?:https?:|mailto:|#|\/\/)/i.test(href) ? (
+              <button className="chat-file-link" onClick={() => onFile(href)}>
                 {children}
               </button>
             ) : (
@@ -219,7 +230,10 @@ function Dialog({ title, subtitle, children, onClose, wide = false }) {
       ref={ref}
       aria-label={title}
       className={wide ? "dialog wide" : "dialog"}
-      onCancel={onClose}
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}

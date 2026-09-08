@@ -1,12 +1,58 @@
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { mkdir, open, lstat, realpath } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { id, now } from "./store.mjs";
-import { git, repository, safeRead, createWorktree } from "./git.mjs";
+import { git, repository, safeRead, createWorktree, inside } from "./git.mjs";
 import { searchablePath } from "./search.mjs";
 import { redact } from "./sentinel.mjs";
 import { deletionBlockedReason } from "../shared/session-lifecycle.mjs";
 import { validatePermissions } from "../shared/permissions.mjs";
 import { newSessionDefaults, onboardingSettings } from "./onboarding.mjs";
+
+const liveProjectStatuses = new Set([
+  "queued",
+  "preparing",
+  "running",
+  "pausing",
+  "validating",
+  "accepting",
+]);
+
+export function removeProject({ store, engine }, key, input) {
+  if (input.approved !== true)
+    throw new Error("Confirm removing this project.");
+  const project = store.get("project", key);
+  if (project.removedAt) return { id: key, removedAt: project.removedAt };
+  if (project.kind === "scratch")
+    throw new Error("Scratch space cannot be removed as a project folder.");
+  const runs = store.list("run").filter((run) => run.projectId === key);
+  if (
+    runs.some(
+      (run) =>
+        liveProjectStatuses.has(run.status) ||
+        run.shellOpen ||
+        ["starting", "running", "stopping"].includes(run.preview?.status),
+    )
+  )
+    throw new Error(
+      "Stop this project's active chats, terminals and previews before removing it.",
+    );
+  for (const run of runs) {
+    engine.releaseIdleWorker(run.id);
+    engine.watchers.get(run.id)?.close();
+    engine.watchers.delete(run.id);
+    clearTimeout(engine.scanDebounce.get(run.id));
+    engine.scanDebounce.delete(run.id);
+  }
+  const removedAt = now();
+  store.patch("project", key, { removedAt });
+  store.event(key, null, "project.removed", {
+    recoverable: true,
+    filesDeleted: false,
+  });
+  return { id: key, removedAt, filesDeleted: false };
+}
 
 export function deleteSession({ store, engine }, key, input) {
   if (input.approved !== true) throw new Error("Confirm deleting this chat.");
@@ -196,7 +242,120 @@ export async function newWorkspaceSession(app, input) {
   }
 }
 
-export async function sessionFiles(run, path) {
+const fileVersion = (content) =>
+  createHash("sha256").update(content).digest("hex");
+
+const validateProjectPath = (path) => {
+  if (
+    typeof path !== "string" ||
+    !path.trim() ||
+    path !== path.trim() ||
+    path.length > 500 ||
+    path.startsWith("/") ||
+    path.startsWith("\\") ||
+    path.includes("\\") ||
+    path.split("/").some((part) => !part || part === "." || part === "..") ||
+    !searchablePath(path)
+  )
+    throw new Error("Use a safe project-relative path.");
+  return path;
+};
+
+async function safeProjectParent(root, path) {
+  const canonicalRoot = await realpath(root);
+  let current = canonicalRoot;
+  for (const part of path.split("/").slice(0, -1)) {
+    const next = join(current, part);
+    const stat = await lstat(next).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+      return null;
+    });
+    if (!stat) await mkdir(next);
+    else if (!stat.isDirectory() || stat.isSymbolicLink())
+      throw new Error("A parent path is not a real project folder.");
+    current = await realpath(next);
+    if (!inside(canonicalRoot, current))
+      throw new Error("Path is outside the project folder.");
+  }
+  return canonicalRoot;
+}
+
+export async function writeProjectEntry(project, input) {
+  if (project.removedAt)
+    throw new Error("Open this project before editing it.");
+  const path = validateProjectPath(input.path);
+  const root = await safeProjectParent(project.path, path);
+  const target = resolve(root, path);
+  if (!inside(root, target))
+    throw new Error("Path is outside the project folder.");
+  if (input.kind === "folder") {
+    const stat = await lstat(target).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+      return null;
+    });
+    if (stat)
+      throw new Error(
+        stat.isDirectory() && !stat.isSymbolicLink()
+          ? "This folder already exists."
+          : "A file already uses this path.",
+      );
+    await mkdir(target, { recursive: false });
+    const marker = join(target, ".gitkeep");
+    const handle = await open(
+      marker,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_NOFOLLOW,
+      0o600,
+    );
+    await handle.close();
+    return { path, kind: "folder" };
+  }
+  if (input.kind !== "file") throw new Error("Choose a file or folder.");
+  if (typeof input.content !== "string" || input.content.length > 160_000)
+    throw new Error("Files must contain no more than 160,000 characters.");
+  const existing = await lstat(target).catch((error) => {
+    if (error.code !== "ENOENT") throw error;
+    return null;
+  });
+  if (existing && (!existing.isFile() || existing.isSymbolicLink()))
+    throw new Error("This path is not an editable file.");
+  const current = existing ? await safeRead(root, path) : null;
+  if (existing && current === null)
+    throw new Error("This file cannot be edited safely.");
+  if (
+    (existing && input.baseVersion !== fileVersion(current)) ||
+    (!existing && input.baseVersion !== null)
+  )
+    throw Object.assign(
+      new Error(
+        "This file changed since you opened it. Refresh before saving.",
+      ),
+      { status: 409 },
+    );
+  const handle = await open(
+    target,
+    constants.O_WRONLY |
+      constants.O_CREAT |
+      constants.O_TRUNC |
+      constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    await handle.writeFile(input.content, "utf8");
+  } finally {
+    await handle.close();
+  }
+  return {
+    path,
+    kind: "file",
+    content: input.content,
+    version: fileVersion(input.content),
+  };
+}
+
+export async function sessionFiles(run, path, { redactContent = true } = {}) {
   if (!run.worktree) return { files: [], pending: true };
   const files = [
     ...new Set(
@@ -239,7 +398,11 @@ export async function sessionFiles(run, path) {
       path,
       content: "Preview unavailable: binary, linked or oversized file.",
     };
-  return { path, content: redact(content) };
+  return {
+    path,
+    content: redactContent ? redact(content) : content,
+    version: fileVersion(content),
+  };
 }
 
 export function updateSessionOptions({ store, engine }, key, input) {

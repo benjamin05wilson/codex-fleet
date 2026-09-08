@@ -1,3 +1,4 @@
+.workspace-shortcut,
 .brain-shortcut {
   display: flex;
   align-items: center;
@@ -7,6 +8,7 @@
   color: var(--muted);
   font-size: 12px;
 }
+.workspace-shortcut[aria-pressed="true"],
 .brain-shortcut[aria-pressed="true"] {
   color: var(--accent);
   background: #e4ad7910;

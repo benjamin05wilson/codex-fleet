@@ -300,6 +300,8 @@ else {
               const result = await owner.openForAgent(input);
               if (desktopWindow.isDestroyed())
                 throw new Error("Fleet window closed.");
+              if (desktopWindow.isMinimized()) desktopWindow.restore();
+              desktopWindow.show();
               desktopWindow.webContents.send("fleet:browser-requested", {
                 projectId: input.projectId,
                 runId: input.runId,

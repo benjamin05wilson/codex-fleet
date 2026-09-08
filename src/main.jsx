@@ -68,6 +68,7 @@ import {
 } from "./ui.jsx";
 import { SessionLanding, RunDetail } from "./features/session.jsx";
 import { BrainView } from "./features/brain.jsx";
+import { ProjectCodeExplorer } from "./features/code-explorer.jsx";
 import { Sentinel } from "./features/security.jsx";
 import { Missions } from "./features/workflows.jsx";
 import { WorkflowPlanner } from "./features/workflow-planner.jsx";
@@ -85,6 +86,7 @@ import { ProjectStart } from "./features/onboarding.jsx";
 import {
   WorkspaceSidebar,
   DeleteSessionDialog,
+  RemoveProjectDialog,
   SessionTrash,
 } from "./features/workspace.jsx";
 import { HomePage } from "./features/home.jsx";
@@ -217,6 +219,7 @@ function App() {
   const [setupDismissed, setSetupDismissed] = useState(false);
   const savingSetup = useRef(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [projectDeleteTarget, setProjectDeleteTarget] = useState(null);
   const deletingSession = useRef(false);
   const openingSession = useRef(false);
   const openConversation = async (id = projectId, kind) => {
@@ -418,6 +421,21 @@ function App() {
       deletingSession.current = false;
     }
   };
+  const removeProjectFolder = async () => {
+    if (!projectDeleteTarget) return;
+    const target = projectDeleteTarget;
+    const result = await act(
+      () => api(`/projects/${target.id}`, "DELETE", { approved: true }),
+      "Project removed from Fleet. Its folder and files remain on your computer.",
+    );
+    if (result) {
+      setClosedProjectTabs((ids) => ids.filter((id) => id !== target.id));
+      localStorage.removeItem(`fleet.selection.${target.id}`);
+      localStorage.removeItem(`fleet.code-file.${target.id}`);
+      if (projectId === target.id) setSelected(null);
+      setProjectDeleteTarget(null);
+    }
+  };
   const missions =
     state?.missions.filter((m) => m.projectId === projectId) || [];
   const findings =
@@ -543,7 +561,7 @@ function App() {
           {view !== "home" && (
             <>
               <button
-                className="brain-shortcut"
+                className="workspace-shortcut"
                 aria-label="Project brain"
                 aria-pressed={view === "brain"}
                 disabled={!project}
@@ -553,8 +571,18 @@ function App() {
                 Brain
               </button>
               <button
+                className="workspace-shortcut"
+                aria-label="Project code"
+                aria-pressed={view === "code"}
+                disabled={!project}
+                onClick={() => setView(view === "code" ? "sessions" : "code")}
+              >
+                <FileCode2 size={15} />
+                Code
+              </button>
+              <button
                 className="icon-button"
-                disabled={view === "brain"}
+                disabled={view === "brain" || view === "code"}
                 aria-label={
                   listOpen ? "Hide session list" : "Show session list"
                 }
@@ -585,6 +613,9 @@ function App() {
                   <hr />
                   <button disabled={!project} onClick={() => setView("brain")}>
                     Project memory
+                  </button>
+                  <button disabled={!project} onClick={() => setView("code")}>
+                    Project code
                   </button>
                   <button
                     disabled={!project}
@@ -662,7 +693,7 @@ function App() {
           />
         ) : (
           <div className="workspace-body">
-            {listOpen && view !== "brain" && (
+            {listOpen && view !== "brain" && view !== "code" && (
               <WorkspaceSidebar
                 key={allProjects ? "all-projects" : projectId || "workspace"}
                 state={state}
@@ -674,6 +705,7 @@ function App() {
                 chooseProject={openProject}
                 onNew={openConversation}
                 onDelete={setDeleteTarget}
+                onDeleteProject={setProjectDeleteTarget}
                 onTrash={() => setModal("trash")}
                 trashCount={deletedRuns.length}
                 busy={busy}
@@ -687,30 +719,32 @@ function App() {
                 />
               ) : (
                 <>
-                  {view !== "sessions" && view !== "brain" && (
-                    <div className="focus-page-heading">
-                      <h1>
-                        {view === "brain"
-                          ? "Project brain"
-                          : view === "missions"
-                            ? "Workflows"
-                            : view === "attention"
-                              ? "Attention"
-                              : view === "sentinel"
-                                ? "Security"
-                                : "Activity"}
-                      </h1>
-                      <p>
-                        {view === "attention"
-                          ? "Only the things that need you."
-                          : view === "brain"
-                            ? "Project knowledge, with sources."
+                  {view !== "sessions" &&
+                    view !== "brain" &&
+                    view !== "code" && (
+                      <div className="focus-page-heading">
+                        <h1>
+                          {view === "brain"
+                            ? "Project brain"
                             : view === "missions"
-                              ? "Review the plan. Let Codex do the work."
-                              : ""}
-                      </p>
-                    </div>
-                  )}
+                              ? "Workflows"
+                              : view === "attention"
+                                ? "Attention"
+                                : view === "sentinel"
+                                  ? "Security"
+                                  : "Activity"}
+                        </h1>
+                        <p>
+                          {view === "attention"
+                            ? "Only the things that need you."
+                            : view === "brain"
+                              ? "Project knowledge, with sources."
+                              : view === "missions"
+                                ? "Review the plan. Let Codex do the work."
+                                : ""}
+                        </p>
+                      </div>
+                    )}
                   {view === "sessions" && (
                     <section className="detail-column">
                       {selected && runs.some((r) => r.id === selected) ? (
@@ -868,6 +902,14 @@ function App() {
                       notify={notify}
                     />
                   )}
+                  {view === "code" && (
+                    <ProjectCodeExplorer
+                      key={projectId}
+                      project={project}
+                      runs={runs}
+                      selectedRunId={selected}
+                    />
+                  )}
                   {view === "sentinel" && (
                     <Sentinel
                       findings={findings}
@@ -897,6 +939,17 @@ function App() {
             if (!deletingSession.current) setDeleteTarget(null);
           }}
           onDelete={deleteConversation}
+        />
+      )}
+      {projectDeleteTarget && (
+        <RemoveProjectDialog
+          project={projectDeleteTarget}
+          runs={state.runs.filter(
+            (run) => run.projectId === projectDeleteTarget.id,
+          )}
+          busy={busy}
+          onClose={() => setProjectDeleteTarget(null)}
+          onRemove={removeProjectFolder}
         />
       )}
       {modal === "trash" && (

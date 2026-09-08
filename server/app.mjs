@@ -18,7 +18,9 @@ import {
   newWorkspaceSession,
   deleteSession,
   restoreSession,
+  removeProject,
   sessionFiles,
+  writeProjectEntry,
   updateSessionOptions,
 } from "./workspace.mjs";
 import { limits } from "./limits.mjs";
@@ -117,7 +119,7 @@ export async function createApp({
     if (inventoryBusy || closing) return;
     inventoryBusy = true;
     try {
-      for (const project of store.list("project")) {
+      for (const project of store.list("project").filter((p) => !p.removedAt)) {
         if (closing) break;
         try {
           const current = await repository(project.path);
@@ -189,6 +191,23 @@ export async function createApp({
         : await prepareProject(input);
     const duplicate = store.list("project").find((p) => p.path === repo.path);
     if (duplicate) {
+      if (duplicate.removedAt) {
+        const restored = store.patch("project", duplicate.id, {
+          removedAt: null,
+          ...repo,
+        });
+        await brain.refresh(restored);
+        for (const run of store
+          .list("run")
+          .filter(
+            (item) =>
+              item.projectId === restored.id &&
+              !item.deletedAt &&
+              item.worktree,
+          ))
+          engine.watchWorktree(run);
+        return restored;
+      }
       if (input.firstTask)
         throw new Error(
           "This project is already connected. Open it and assign the task with New session.",
@@ -329,6 +348,31 @@ export async function createApp({
           );
           return;
         }
+        const projectFilesMatch = path.match(
+          /^\/api\/projects\/([^/]+)\/files$/,
+        );
+        const projectFileTarget = () => {
+          const project = store.get("project", projectFilesMatch[1]);
+          const runId = url.searchParams.get("runId");
+          if (!runId) return project;
+          const run = store.get("run", runId);
+          if (run.projectId !== project.id || run.deletedAt || !run.worktree)
+            throw new Error("This session working folder is unavailable.");
+          return { ...project, path: run.worktree };
+        };
+        if (req.method === "GET" && projectFilesMatch) {
+          const project = projectFileTarget();
+          send(
+            await sessionFiles(
+              { worktree: project.path },
+              url.searchParams.has("path")
+                ? url.searchParams.get("path")
+                : undefined,
+              { redactContent: false },
+            ),
+          );
+          return;
+        }
         if (
           !["GET", "HEAD"].includes(req.method) &&
           req.headers["x-fleet-token"] !== csrf
@@ -378,6 +422,11 @@ export async function createApp({
             .prepare("INSERT INTO requests VALUES(?,?,'pending',NULL)")
             .run(key, fingerprint);
           requestKey = key;
+        }
+        if (req.method === "PUT" && projectFilesMatch) {
+          const project = projectFileTarget();
+          send(await writeProjectEntry(project, await body(req)));
+          return;
         }
         const sessionTarget = path.match(/^\/api\/runs\/([^/]+)(?:\/(.*))?$/);
         if (sessionTarget) {
@@ -537,7 +586,20 @@ export async function createApp({
           return;
         }
         if (req.method === "GET" && path === "/api/state") {
-          const allRuns = store.list("run");
+          const projects = store.list("project").filter((p) => !p.removedAt);
+          const visibleProjects = new Set(projects.map((p) => p.id));
+          const allRuns = store
+            .list("run")
+            .filter((r) => visibleProjects.has(r.projectId));
+          const visibleRunIds = new Set(allRuns.map((r) => r.id));
+          const workflows = store
+            .list("workflow")
+            .filter((item) => visibleProjects.has(item.projectId));
+          const visibleWorkflowIds = new Set(workflows.map((item) => item.id));
+          const teams = store
+            .list("team")
+            .filter((item) => visibleProjects.has(item.projectId));
+          const visibleTeamIds = new Set(teams.map((item) => item.id));
           const runs = allRuns
             .filter((r) => !r.deletedAt)
             .map(({ validation, ...r }) => ({
@@ -554,7 +616,7 @@ export async function createApp({
             browserAgentAvailable: true,
             browserAutoOpenAvailable: !!browsers.launcher,
             onboarding: onboardingSettings(store),
-            projects: store.list("project"),
+            projects,
             runs,
             deletedRuns: allRuns
               .filter((r) => r.deletedAt && r.deletionRootId === r.id)
@@ -565,18 +627,28 @@ export async function createApp({
                 sessionKind,
                 deletedAt,
               })),
-            missions: store.list("mission"),
-            workflows: store.list("workflow"),
-            workitems: store.list("workitem"),
+            missions: store
+              .list("mission")
+              .filter((item) => visibleProjects.has(item.projectId)),
+            workflows,
+            workitems: store
+              .list("workitem")
+              .filter(
+                (item) =>
+                  visibleProjects.has(item.projectId) ||
+                  visibleWorkflowIds.has(item.workflowId),
+              ),
             findings: store
               .list("finding")
               .filter(
-                (f) => !allRuns.some((r) => r.id === f.runId && r.deletedAt),
+                (f) =>
+                  visibleRunIds.has(f.runId) &&
+                  !allRuns.some((r) => r.id === f.runId && r.deletedAt),
               ),
             status: await status(),
             limits: { concurrency: engine.concurrency, ...limits },
             workflowTemplates: templates,
-            teams: store.list("team"),
+            teams,
             scratchDefaults: store
               .list("preferences")
               .find((p) => p.id === "scratch-session") || {
@@ -584,7 +656,13 @@ export async function createApp({
               model: "",
               useTeam: false,
             },
-            teamRounds: store.list("team-round"),
+            teamRounds: store
+              .list("team-round")
+              .filter(
+                (item) =>
+                  visibleProjects.has(item.projectId) ||
+                  visibleTeamIds.has(item.teamId),
+              ),
             teamConfig: { roles: teamRoles, defaults: teamDefaults },
           });
           return;
@@ -711,6 +789,17 @@ export async function createApp({
         const projectMatch = path.match(
           /^\/api\/projects\/([^/]+)(?:\/(brain|notes|runs|missions|activity|conflicts|context|workflows|approve-note))?$/,
         );
+        const projectRootMatch = path.match(/^\/api\/projects\/([^/]+)$/);
+        if (req.method === "DELETE" && projectRootMatch) {
+          send(
+            removeProject(
+              { store, engine },
+              projectRootMatch[1],
+              await body(req),
+            ),
+          );
+          return;
+        }
         if (projectMatch) {
           const project = store.get("project", projectMatch[1]);
           const action = projectMatch[2];

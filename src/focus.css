@@ -1300,6 +1300,19 @@
   text-align: center;
   font-size: 17px;
 }
+.project-group-heading .project-delete-action {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  padding: 0;
+  opacity: 0.55;
+}
+.project-group-heading .project-delete-action:hover,
+.project-group-heading .project-delete-action:focus-visible {
+  color: #e9a39a;
+  background: #e9a39a10;
+  opacity: 1;
+}
 .focused-workspace .project-sidebar .session-row {
   padding: 11px 12px;
   gap: 9px;
@@ -1449,7 +1462,7 @@
   padding: 20px;
 }
 .focused-workspace .with-tool .detail-scroll {
-  padding: 28px;
+  padding: 28px 20px;
 }
 .focused-workspace .with-tool .followup {
   margin: 12px 20px 20px;
@@ -1460,6 +1473,362 @@
 }
 .tool-scroll .terminal-mode small {
   flex-basis: 100%;
+}
+
+/* Conversation surface */
+.focused-workspace .run-detail {
+  --chat-font: Inter, "Segoe UI Variable Text", "Segoe UI", sans-serif;
+}
+
+.focused-workspace .conversation-pane {
+  background:
+    radial-gradient(circle at 50% 0, #25201b38, transparent 360px), #17181b;
+}
+
+.focused-workspace .run-head {
+  min-height: 70px;
+  padding: 14px 26px;
+  gap: 10px;
+  border-bottom: 1px solid #ffffff0a;
+  background: #1b1c20e8;
+}
+
+.run-title-group {
+  display: grid;
+  flex: 1;
+  min-width: 150px;
+  gap: 5px;
+}
+
+.focused-workspace .run-title-group h2 {
+  min-width: 0;
+  overflow: hidden;
+  color: #ececef;
+  font-family: var(--chat-font);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.25px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-title-group .workspace-kind {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #81858e;
+  font: 10px var(--mono);
+}
+
+.focused-workspace .conversation-feed {
+  padding: 34px clamp(16px, 2vw, 32px) 42px;
+  scroll-behavior: auto;
+  overflow-anchor: none;
+  scrollbar-color: #42444a transparent;
+}
+
+.conversation-feed > .message,
+.conversation-feed > .command-group,
+.conversation-feed > .working-message,
+.conversation-feed > .start-note,
+.conversation-feed > .notice {
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.focused-workspace .history-load-row {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  margin: 0 auto 30px;
+}
+
+.focused-workspace .tool-activity {
+  border: 1px solid #36383f;
+  border-radius: 10px;
+  background: #1d1e22;
+  padding: 12px 16px;
+  box-sizing: border-box;
+}
+.tool-activity-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #a7abb4;
+  font-size: 12px;
+}
+.tool-activity-heading time {
+  margin-left: auto;
+  color: #858a94;
+}
+.tool-activity pre {
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font:
+    12px/1.65 "Cascadia Code",
+    Consolas,
+    monospace;
+  color: #d6d9e0;
+  background: #17181b;
+  padding: 10px;
+  border-radius: 6px;
+}
+.tool-activity details {
+  margin-top: 10px;
+}
+.tool-activity summary {
+  cursor: pointer;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.tool-activity summary span {
+  color: #9299a5;
+}
+
+.tool-activity .diff-counts {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: 10px;
+  white-space: nowrap;
+  font:
+    12px "Cascadia Code",
+    Consolas,
+    monospace;
+}
+.tool-activity .diff-added {
+  color: #7ee2a0;
+}
+.tool-activity .diff-deleted {
+  color: #ff929b;
+}
+.tool-activity pre.file-diff {
+  padding: 8px 0;
+}
+.file-diff .diff-line {
+  display: block;
+  padding: 0 12px;
+  min-height: 1.65em;
+}
+.file-diff .diff-line-added {
+  color: #a4edba;
+  background: #23743a33;
+}
+.file-diff .diff-line-deleted {
+  color: #ffb0b7;
+  background: #a9324133;
+}
+.file-diff .diff-line-hunk {
+  color: #91bded;
+  background: #3f76a51f;
+}
+
+.focused-workspace .history-load {
+  width: fit-content;
+  margin: 0;
+  padding: 7px 12px;
+  border: 1px solid #36383f;
+  border-radius: 999px;
+  color: #8f949e;
+  background: #1d1e22d9;
+  font-size: 10px;
+  box-shadow: 0 3px 12px #0002;
+}
+
+.focused-workspace .history-load:hover {
+  border-color: #51473d;
+  color: #d4b595;
+  background: #27231f;
+}
+
+.focused-workspace .message {
+  margin-bottom: 38px;
+  font-family: var(--chat-font);
+}
+
+.focused-workspace .message-label {
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #969ba5;
+  font-size: 11px;
+}
+
+.focused-workspace .message-label strong {
+  color: #d9dadd;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+}
+
+.focused-workspace .message-label > span:last-child {
+  margin-left: 2px;
+  color: #666b74;
+  font-size: 9px;
+}
+
+.focused-workspace .avatar {
+  width: 27px;
+  height: 27px;
+  border: 1px solid #45474e;
+  border-radius: 8px;
+  background: #292b30;
+  box-shadow: 0 2px 7px #0003;
+}
+
+.focused-workspace .codex-avatar {
+  border-color: #765638;
+  color: #e9bb8e;
+  background: linear-gradient(145deg, #493522, #29231e);
+}
+
+.focused-workspace .message-body {
+  padding-left: 36px;
+}
+
+.focused-workspace .message-body .markdown {
+  color: #cdd0d6;
+  font-family: var(--chat-font);
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.focused-workspace .message-body .markdown p {
+  margin-bottom: 13px;
+}
+
+.focused-workspace .message-body .markdown h1,
+.focused-workspace .message-body .markdown h2,
+.focused-workspace .message-body .markdown h3 {
+  color: #f0f0f1;
+  letter-spacing: -0.25px;
+}
+
+.focused-workspace .message-body .markdown pre {
+  margin: 16px 0;
+  padding: 16px 18px;
+  border-color: #34363d;
+  border-radius: 9px;
+  background: #101114;
+  box-shadow: inset 0 1px #ffffff05;
+}
+
+.focused-workspace .message-body .markdown pre code {
+  font-family: "Cascadia Code", "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.focused-workspace .user-message {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.focused-workspace .user-message .message-label {
+  flex-direction: row-reverse;
+}
+
+.focused-workspace .user-message .message-label > span:last-child {
+  margin: 0 2px 0 0;
+}
+
+.focused-workspace .user-message .message-body {
+  width: fit-content;
+  max-width: min(78%, 690px);
+  padding: 11px 15px;
+  border: 1px solid #5a46347a;
+  border-radius: 15px 5px 15px 15px;
+  color: #e3e0dd;
+  background: linear-gradient(145deg, #342b24, #292521);
+  box-shadow: 0 5px 18px #0000001f;
+}
+
+.focused-workspace .user-message .message-body .markdown {
+  color: #e2dfdc;
+}
+
+.focused-workspace .command-group {
+  margin-bottom: 30px;
+  border-color: #34363d;
+  border-radius: 9px;
+  background: #121316c9;
+}
+
+.focused-workspace .working-message {
+  box-sizing: border-box;
+  margin-top: 8px;
+  margin-bottom: 28px;
+  padding: 11px 14px;
+  border: 1px solid #344052;
+  border-radius: 9px;
+  color: #b8c6d9;
+  background: #1b222c9c;
+  font-size: 12px;
+}
+
+.focused-workspace .followup {
+  width: calc(100% - clamp(32px, 4vw, 64px));
+  margin: 14px auto 22px;
+  padding: 13px 13px 10px;
+  gap: 11px;
+  border: 1px solid #44464e;
+  border-radius: 14px;
+  background: #232429;
+  box-shadow:
+    0 10px 34px #0005,
+    inset 0 1px #ffffff06;
+}
+
+.focused-workspace .followup:focus-within {
+  border-color: #9e7957;
+  box-shadow:
+    0 12px 38px #0006,
+    0 0 0 2px #ad7e5020;
+}
+
+.focused-workspace .followup textarea {
+  min-height: 52px;
+  padding: 2px 3px;
+  resize: none;
+  color: #e3e4e7;
+  font-family: var(--chat-font);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.focused-workspace .permission-control {
+  padding: 5px 7px;
+  border-radius: 6px;
+  color: #a5a8af;
+  background: #ffffff06;
+}
+
+.focused-workspace .send-button {
+  width: 33px;
+  height: 33px;
+  border-radius: 9px;
+  box-shadow: 0 4px 12px #0004;
+}
+
+.focused-workspace .send-button:disabled {
+  color: #66676b;
+  background: #33343a;
+  box-shadow: none;
+}
+
+@media (max-width: 700px) {
+  .focused-workspace .conversation-feed {
+    padding: 24px 16px 32px;
+  }
+  .focused-workspace .user-message .message-body {
+    max-width: 90%;
+  }
+  .focused-workspace .followup {
+    width: calc(100% - 24px);
+    margin: 10px 12px 14px;
+  }
 }
 .tool-scroll .terminal-surface .notice {
   margin: 14px 0;

@@ -211,7 +211,11 @@ export function createNativeBrowser({
     // Main-process only: the broker derives project/run from the active chat's
     // capability. This is not an IPC action that a website or model can invoke.
     async openForAgent({ projectId, url }) {
-      browserURL(url, forbidden);
+      if (url !== undefined) browserURL(url, forbidden);
+      if (url === undefined && (!current || current.projectId !== projectId))
+        throw new Error(
+          "No open page for this project. Use navigate with a URL to open it.",
+        );
       if (disposed || !(await validateProject(projectId)))
         throw new Error("Choose an existing project in Fleet Desktop.");
       if (opening)

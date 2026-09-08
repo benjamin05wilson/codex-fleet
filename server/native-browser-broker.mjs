@@ -1,5 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { inside } from "./git.mjs";
 import { validateNativeAction } from "../shared/native-browser-actions.mjs";
 
 const failure = (message) => Object.assign(new Error(message), { status: 409 });
@@ -9,6 +12,50 @@ export class NativeBrowserBroker {
     this.sessions = new Map();
     this.desktopTokens = new Map();
     this.tokens = new Map();
+    // Durable workers keep their MCP connection across backend restarts.
+    // Recover only credentials belonging to the currently attached worker.
+    if (engine.dataDir) {
+      for (const run of engine.store.list("run")) {
+        if (
+          !this.eligible(run) ||
+          !run.worker?.directory ||
+          !inside(join(engine.dataDir, "workers", run.id), run.worker.directory)
+        )
+          continue;
+        try {
+          const config = JSON.parse(
+            readFileSync(join(run.worker.directory, "config.json"), "utf8"),
+          );
+          if (
+            config.identity === run.worker.identity &&
+            config.run?.id === run.id &&
+            config.run?.projectId === run.projectId &&
+            /^[a-f0-9]{64}$/.test(config.browser?.token || "")
+          ) {
+            this.tokens.set(config.browser.token, {
+              projectId: run.projectId,
+              runId: run.id,
+              identity: config.identity,
+            });
+          }
+        } catch {
+          /* A missing worker config is handled by worker recovery. */
+        }
+      }
+    }
+  }
+  eligible(run) {
+    return Boolean(
+      run &&
+      !run.deletedAt &&
+      run.projectId &&
+      !run.reviewOf &&
+      run.kind !== "review" &&
+      (!run.teamRole || run.teamRole === "developer") &&
+      (run.status === "running" ||
+        (run.worker?.persistent === true &&
+          ["queued", "preparing", "review"].includes(run.status))),
+    );
   }
   state(projectId) {
     return {
@@ -45,7 +92,6 @@ export class NativeBrowserBroker {
     };
     this.sessions.set(projectId, session);
     this.desktopTokens.set(token, session);
-    this.touch(session);
     return { token };
   }
   registerLauncher({ nativeId }) {
@@ -57,7 +103,6 @@ export class NativeBrowserBroker {
     const token = randomBytes(32).toString("hex");
     this.launcher = { nativeId, token, queue: [], current: null, waiter: null };
     this.desktopTokens.set(token, this.launcher);
-    this.touch(this.launcher);
     return { token };
   }
   desktop(token) {
@@ -68,15 +113,9 @@ export class NativeBrowserBroker {
       });
     return session;
   }
-  touch(session) {
-    clearTimeout(session.lease);
-    session.lease = setTimeout(() => this.disconnect(session.token), 40000);
-    session.lease.unref?.();
-  }
   disconnect(token) {
     const s = this.desktopTokens.get(token);
     if (!s) return {};
-    clearTimeout(s.lease);
     this.desktopTokens.delete(token);
     if (this.launcher === s) this.launcher = null;
     if (this.sessions.get(s.projectId) === s) this.sessions.delete(s.projectId);
@@ -103,16 +142,17 @@ export class NativeBrowserBroker {
     for (const [token, c] of this.tokens) {
       const owner = this.engine.store.get("run", c.runId);
       if (
-        c.runId === run.id ||
         !owner ||
         owner.deletedAt ||
-        (owner.status !== "running" &&
-          !(owner.status === "review" && owner.worker?.persistent === true)) ||
+        !this.eligible(owner) ||
         owner.worker?.identity !== c.identity
       )
         this.tokens.delete(token);
     }
-    const token = randomBytes(32).toString("hex");
+    const existing = [...this.tokens].find(
+      ([, c]) => c.runId === run.id && c.identity === identity,
+    );
+    const token = existing?.[0] || randomBytes(32).toString("hex");
     this.tokens.set(token, {
       projectId: run.projectId,
       runId: run.id,
@@ -129,14 +169,14 @@ export class NativeBrowserBroker {
     const c = this.tokens.get(token),
       run = c && this.engine.store.get("run", c.runId);
     if (
-      !run ||
-      run.deletedAt ||
+      !this.eligible(run) ||
       run.projectId !== c.projectId ||
-      run.status !== "running" ||
       run.worker?.identity !== c.identity
     )
       throw Object.assign(
-        new Error("Browser access for this chat turn has expired."),
+        new Error(
+          "This browser connection belongs to a stopped or replaced chat worker. Resume the chat to reconnect.",
+        ),
         { status: 403 },
       );
     return c;
@@ -146,11 +186,14 @@ export class NativeBrowserBroker {
     validateNativeAction(input);
     // Only a navigation request can create a page. References/actions from a
     // closed page must fail, never silently operate on a replacement page.
-    if (input.action === "navigate" && this.launcher) {
+    if (
+      this.launcher &&
+      (input.action === "navigate" || this.sessions.has(c.projectId))
+    ) {
       await this.enqueue(this.launcher, token, {
         projectId: c.projectId,
         runId: c.runId,
-        url: input.url,
+        ...(input.action === "navigate" ? { url: input.url } : {}),
       });
       this.check(token);
     }
@@ -191,7 +234,6 @@ export class NativeBrowserBroker {
   }
   next(token, signal) {
     const s = this.desktop(token);
-    this.touch(s);
     if (s.waiter) throw failure("Native command receiver already connected.");
     if (signal.aborted) return Promise.resolve(null);
     return new Promise((resolve) => {

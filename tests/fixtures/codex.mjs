@@ -43,6 +43,11 @@ if (process.argv.includes("app-server")) {
               nextCursor: "page-2",
             },
       );
+    else if (
+      request.method === "thread/resume" &&
+      request.params.threadId === "fixture-exit-on-resume"
+    )
+      process.exit(1);
     else if (["thread/start", "thread/resume"].includes(request.method)) {
       threadOptions = request.params;
       reply({ thread: { id: "fixture-thread", sessionId: "fixture-root" } });

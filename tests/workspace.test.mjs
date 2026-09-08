@@ -16,6 +16,7 @@ import { createApp } from "../server/app.mjs";
 import {
   quickSession,
   newWorkspaceSession,
+  removeProject,
   sessionFiles,
   updateSessionOptions,
   deleteSession,
@@ -165,6 +166,55 @@ test("delete/restore API enforces CSRF, hides deleted chats from state/search an
   assert.equal(restored.runs[0].id, run.id);
   assert.equal(restored.deletedRuns.length, 0);
   assert.equal(restored.runs[0].attempt, 0);
+});
+
+test("project files API lists and previews the current working tree safely", async (t) => {
+  const { app, root } = await fixture(t);
+  const project = await app.addProject({
+    mode: "create",
+    parentPath: root,
+    folderName: "code-explorer-source",
+    gitApproved: true,
+  });
+  await writeFile(
+    join(project.path, "current.js"),
+    "export const current = true;\n",
+  );
+  await writeFile(join(project.path, ".env"), "SECRET=not-for-the-ui\n");
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}/api`;
+  const listing = await fetch(`${base}/projects/${project.id}/files`).then(
+    (r) => r.json(),
+  );
+  assert.ok(listing.files.includes("current.js"));
+  assert.ok(!listing.files.includes(".env"));
+  const preview = await fetch(
+    `${base}/projects/${project.id}/files?path=current.js`,
+  ).then((r) => r.json());
+  assert.equal(preview.content, "export const current = true;\n");
+  assert.equal(
+    (await fetch(`${base}/projects/${project.id}/files?path=.env`)).status,
+    400,
+  );
+});
+
+test("removing a project hides the whole folder group and preserves its files", async (t) => {
+  const { app, root } = await fixture(t);
+  const project = await app.addProject({
+    mode: "create",
+    parentPath: root,
+    folderName: "removable-project",
+    gitApproved: true,
+  });
+  await writeFile(join(project.path, "kept.txt"), "still here\n");
+  assert.throws(() => removeProject(app, project.id, {}), /Confirm/);
+  const removed = removeProject(app, project.id, { approved: true });
+  assert.equal(removed.filesDeleted, false);
+  assert.ok(app.store.get("project", project.id).removedAt);
+  assert.equal(
+    await readFile(join(project.path, "kept.txt"), "utf8"),
+    "still here\n",
+  );
 });
 
 async function fixture(t) {
