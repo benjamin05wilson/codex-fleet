@@ -54,36 +54,111 @@ export function removeProject({ store, engine }, key, input) {
   return { id: key, removedAt, filesDeleted: false };
 }
 
-export function deleteSession({ store, engine }, key, input) {
+export function deleteSession({ store, engine, teams, workflows }, key, input) {
   if (input.approved !== true) throw new Error("Confirm deleting this chat.");
   const run = store.get("run", key);
-  if (run.reviewOf)
+  if (run.reviewOf && !run.teamId && !run.teamRole)
     throw new Error("Delete the parent chat instead of its linked review.");
   if (run.deletedAt) return { id: key, deletedAt: run.deletedAt };
   const related = store
     .list("run")
-    .filter((r) => r.id === key || r.reviewOf === key);
+    .filter((r) => !r.deletedAt && (r.id === key || r.reviewOf === key));
+  const ids = new Set(related.map((r) => r.id));
+  const affectedTeams = store
+    .list("team")
+    .filter(
+      (team) =>
+        related.some((r) => r.teamId === team.id) ||
+        Object.values(team.members).some((id) => ids.has(id)),
+    );
+  const affectedWorkflows = store
+    .list("workflow")
+    .filter((workflow) => related.some((r) => r.workflowId === workflow.id));
+  const affectedMissions = new Set(
+    related.map((r) => r.missionId).filter(Boolean),
+  );
+  const affectedRounds = store
+    .list("team-round")
+    .filter(
+      (round) =>
+        round.status === "running" &&
+        (affectedTeams.some((team) => team.id === round.teamId) ||
+          ids.has(round.targetRunId)),
+    );
+  // Deletion is synchronous: do not interleave it with an orchestrator's
+  // in-flight filesystem/validation work, which holds an older run snapshot.
+  if (
+    ((affectedTeams.length || affectedRounds.length) && teams?.busy) ||
+    (affectedWorkflows.length && workflows?.busy)
+  )
+    throw new Error(
+      "Automatic agents are finishing an update. Try Trash again shortly.",
+    );
   for (const item of related) {
     const reason = deletionBlockedReason(item);
     if (reason) throw new Error(reason);
     engine.assertIdleWorktree(item, { allowTeamReaders: false });
-    engine.releaseIdleWorker(item.id);
+    const worker = engine.processes.get(item.id);
     if (
-      (engine.processes.has(item.id) &&
-        !engine.processes.get(item.id).releasing) ||
+      (worker && !worker.releasing && !(worker.durable && worker.idle)) ||
       engine.validations.has(item.id)
     )
       throw new Error("Wait for this session to stop before deleting it.");
   }
   const deletedAt = now();
+  const reason =
+    "Paused because a chat was moved to Trash. Restore it before resuming automatic work.";
+  store.db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const team of affectedTeams)
+      store.patch("team", team.id, { enabled: false, reason });
+    for (const workflow of affectedWorkflows)
+      store.patch("workflow", workflow.id, {
+        status: workflow.trashPause ? workflow.status : "paused",
+        reason: workflow.trashPause ? workflow.reason : reason,
+        trashPause: workflow.trashPause || {
+          status: workflow.status,
+          reason: workflow.reason || null,
+          pauseReason: reason,
+          queuedRunIds: store
+            .list("run")
+            .filter(
+              (r) => r.workflowId === workflow.id && r.status === "queued",
+            )
+            .map((r) => r.id),
+        },
+      });
+    for (const round of affectedRounds)
+      store.patch("team-round", round.id, {
+        status: "cancelled",
+        reason,
+        finishedAt: deletedAt,
+      });
+    // Already queued workflow tasks must not continue dispatching after pause.
+    for (const task of store.list("run")) {
+      if (
+        task.status === "queued" &&
+        (affectedWorkflows.some((w) => w.id === task.workflowId) ||
+          affectedMissions.has(task.missionId) ||
+          affectedTeams.some((team) => team.id === task.teamId))
+      )
+        store.patch("run", task.id, { status: "paused" });
+    }
+    for (const item of related)
+      store.patch("run", item.id, { deletedAt, deletionRootId: key });
+    store.event(run.projectId, key, "session.deleted", { recoverable: true });
+    store.db.exec("COMMIT");
+  } catch (error) {
+    store.db.exec("ROLLBACK");
+    throw error;
+  }
   for (const item of related) {
-    store.patch("run", item.id, { deletedAt, deletionRootId: key });
+    engine.releaseIdleWorker(item.id);
     engine.watchers.get(item.id)?.close();
     engine.watchers.delete(item.id);
     clearTimeout(engine.scanDebounce.get(item.id));
     engine.scanDebounce.delete(item.id);
   }
-  store.event(run.projectId, key, "session.deleted", { recoverable: true });
   return { id: key, deletedAt };
 }
 
@@ -92,6 +167,8 @@ export function restoreSession({ store, engine }, key) {
   if (run.deletionRootId && run.deletionRootId !== key)
     throw new Error("Restore the parent chat instead of its linked review.");
   if (!run.deletedAt) return run;
+  if (run.reviewOf && store.get("run", run.reviewOf).deletedAt)
+    throw new Error("Restore the parent chat before restoring this helper.");
   for (const item of store
     .list("run")
     .filter((r) => r.deletionRootId === key)) {

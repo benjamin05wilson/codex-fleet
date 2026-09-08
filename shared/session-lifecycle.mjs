@@ -20,13 +20,5 @@ export function deletionBlockedReason(run) {
   if (run.deletedAt) return "This chat is already in Trash.";
   const activity = sessionActivityBlockedReason(run);
   if (activity) return activity;
-  if (
-    run.teamId ||
-    run.teamRole ||
-    run.teamInitial ||
-    run.workflowId ||
-    run.missionId
-  )
-    return "This session is managed by a team or workflow and cannot be deleted individually.";
   return "";
 }

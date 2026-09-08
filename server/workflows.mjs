@@ -121,6 +121,42 @@ export class Workflows {
   }
   approve(key) {
     const workflow = this.store.get("workflow", key);
+    if (workflow.trashPause) {
+      if (this.busy) throw new Error("Wait for the workflow update to finish.");
+      const runs = this.store.list("run").filter((r) => r.workflowId === key);
+      if (runs.some((r) => r.deletedAt))
+        throw new Error(
+          "Restore this workflow's chats from Trash before resuming it.",
+        );
+      if (
+        !workflow.approvedAt ||
+        workflow.status !== "paused" ||
+        workflow.reason !== workflow.trashPause.pauseReason ||
+        this.store.get("project", workflow.projectId).validation !==
+          workflow.validationCommand ||
+        workflow.trashPause.reason
+      )
+        throw new Error(
+          "Approve a revised plan before continuing this workflow.",
+        );
+      const queued = runs.filter(
+        (r) =>
+          workflow.trashPause.queuedRunIds.includes(r.id) &&
+          r.status === "paused",
+      );
+      for (const run of queued) this.engine.assertIdleWorktree(run);
+      this.store.patch("workflow", key, {
+        status: workflow.trashPause.status,
+        reason: null,
+        trashPause: null,
+      });
+      for (const run of queued)
+        this.engine.queue(run.id, run.followup || undefined);
+      this.store.event(workflow.projectId, null, "workflow.resumed", {
+        id: key,
+      });
+      return this.store.get("workflow", key);
+    }
     if (workflow.approvedAt) return workflow;
     const project = this.store.get("project", workflow.projectId);
     if (workflow.sandbox === "workspace-write" && !project.validation)

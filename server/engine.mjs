@@ -267,6 +267,10 @@ export class Engine {
             !this.store.get("project", r.projectId).removedAt,
         )) {
         if (this.closing) break;
+        // A previous launch yields: Trash or Pause may have changed another
+        // entry in this queue snapshot while it was being prepared.
+        const current = this.store.get("run", run.id);
+        if (current.deletedAt || current.status !== "queued") continue;
         if (this.processes.get(run.id)?.releasing) continue;
         if (
           [...this.processes.values()].filter((state) => !state.idle).length >=
@@ -297,6 +301,7 @@ export class Engine {
         if (
           !run.dependencies.every((d) => {
             const dep = this.store.get("run", d);
+            if (dep.deletedAt) return false;
             return (
               dep.status === "accepted" ||
               (run.workflowId &&

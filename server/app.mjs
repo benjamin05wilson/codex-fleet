@@ -967,7 +967,13 @@ export async function createApp({
           const run = store.get("run", key);
           const action = runMatch[2];
           if (req.method === "DELETE" && !action) {
-            send(deleteSession({ store, engine }, key, await body(req)));
+            send(
+              deleteSession(
+                { store, engine, teams, workflows },
+                key,
+                await body(req),
+              ),
+            );
             return;
           }
           if (req.method === "POST" && action === "restore") {
@@ -1032,10 +1038,20 @@ export async function createApp({
         const missionMatch = path.match(/^\/api\/missions\/([^/]+)\/start$/);
         if (missionMatch && req.method === "POST") {
           store.get("mission", missionMatch[1]);
+          if (
+            store
+              .list("run")
+              .some((r) => r.missionId === missionMatch[1] && r.deletedAt)
+          )
+            throw new Error(
+              "Restore this mission's chats from Trash before starting it.",
+            );
           for (const r of store
             .list("run")
             .filter(
-              (r) => r.missionId === missionMatch[1] && r.status === "draft",
+              (r) =>
+                r.missionId === missionMatch[1] &&
+                ["draft", "paused"].includes(r.status),
             ))
             engine.queue(r.id);
           send({ ok: true });
@@ -1111,6 +1127,7 @@ export async function createApp({
     engine,
     brain,
     teams,
+    workflows,
     previews,
     browsers,
     addProject,

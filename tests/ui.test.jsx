@@ -3032,6 +3032,38 @@ test("new session uses model names returned by Codex discovery", async () => {
     "server-model",
   );
 });
+test("restored workflows offer an explicit resume instead of restarting on render", async () => {
+  const user = userEvent.setup(),
+    act = vi.fn();
+  render(
+    <WorkflowPlanner
+      project={{ id: "project" }}
+      act={act}
+      goRun={() => {}}
+      state={{
+        ...emptyState,
+        workflows: [
+          {
+            id: "workflow",
+            projectId: "project",
+            title: "Paused plan",
+            objective: "Inspect",
+            status: "paused",
+            approvedAt: "today",
+            trashPause: { queuedRunIds: [] },
+            reason: "Restore chats first.",
+            tasks: [],
+            limits: {},
+          },
+        ],
+      }}
+    />,
+  );
+  expect(act).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Resume workflow" }));
+  expect(act).toHaveBeenCalledOnce();
+});
+
 test("workflow editor renders daemon templates and concurrency instead of frontend defaults", async () => {
   const user = userEvent.setup();
   render(
@@ -3664,11 +3696,6 @@ test.each([
     "Stop the preview",
     "Open session",
   ],
-  [
-    { status: "review", teamRole: "developer" },
-    "managed by a team",
-    "Open session",
-  ],
 ])(
   "deletion dialog explains the blocker and opens its session without deleting: %j",
   async (fields, reason, action) => {
@@ -3698,25 +3725,36 @@ test.each([
   },
 );
 
-test("managed chat deletion offers project removal with its scope explained", async () => {
-  const user = userEvent.setup(),
-    onRemoveProject = vi.fn(),
-    onDelete = vi.fn();
-  render(
-    <DeleteSessionDialog
-      run={{ id: "team", title: "Developer", status: "paused", teamId: "team" }}
-      onDelete={onDelete}
-      onRemoveProject={onRemoveProject}
-      onClose={() => {}}
-    />,
-  );
-  expect(screen.getByText(/To hide the whole group/)).toBeTruthy();
-  await user.click(
-    screen.getByRole("button", { name: "Remove project folder…" }),
-  );
-  expect(onRemoveProject).toHaveBeenCalledOnce();
-  expect(onDelete).not.toHaveBeenCalled();
-});
+test.each([
+  { teamId: "team" },
+  { teamRole: "security" },
+  { workflowId: "workflow" },
+  { missionId: "mission" },
+])(
+  "managed chat can be trashed individually with automatic work explained: %j",
+  async (managed) => {
+    const user = userEvent.setup(),
+      onDelete = vi.fn();
+    render(
+      <DeleteSessionDialog
+        run={{ id: "team", title: "Developer", status: "paused", ...managed }}
+        onDelete={onDelete}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByText(/pauses automatic work/)).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: /Remove project folder/ }),
+    ).toBeNull();
+    const confirm = screen.getByRole("button", {
+      name: "Delete chat",
+      exact: true,
+    });
+    expect(confirm.disabled).toBe(false);
+    await user.click(confirm);
+    expect(onDelete).toHaveBeenCalledOnce();
+  },
+);
 
 test("project removal identifies each active blocker including hidden reviewers and links to its controls", async () => {
   const user = userEvent.setup(),

@@ -632,7 +632,6 @@ export function DeleteSessionDialog({
   onClose,
   onDelete,
   onInspect,
-  onRemoveProject,
   busy,
 }) {
   const label = run.sessionKind === "terminal" ? "terminal" : "chat";
@@ -654,11 +653,12 @@ export function DeleteSessionDialog({
           {reason}
         </p>
       )}
-      {reason && managed && (
+      {managed && (
         <p>
-          Team and workflow chats are kept together. To hide the whole group,
-          remove its project folder from Fleet after its active work stops. The
-          files and chat history are kept.
+          This chat belongs to a group of automatic agents. Moving it to Trash
+          pauses automatic work for that group. Other chats stay here, and any
+          already-running agents can finish. Restoring it does not restart
+          agents.
         </p>
       )}
       <div className="dialog-actions">
@@ -668,11 +668,6 @@ export function DeleteSessionDialog({
         {reason && onInspect && (
           <Button disabled={busy} onClick={() => onInspect(run.id)}>
             {run.sessionKind === "terminal" ? "Open terminal" : "Open session"}
-          </Button>
-        )}
-        {reason && managed && onRemoveProject && (
-          <Button disabled={busy} onClick={onRemoveProject}>
-            Remove project folder…
           </Button>
         )}
         <Button disabled={busy || !!reason} onClick={onDelete}>

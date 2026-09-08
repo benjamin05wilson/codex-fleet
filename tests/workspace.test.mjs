@@ -86,7 +86,7 @@ test("deleting chats is recoverable, durable and preserves worktrees, history an
   assert.ok(!restored.shellOpen);
 });
 
-test("delete refuses live or managed sessions and checks linked reviews before changing any record", async (t) => {
+test("delete refuses live sessions and checks linked reviews before changing any record", async (t) => {
   const { app } = await fixture(t);
   const run = await quickSession(app, { approved: true });
   for (const changed of [
@@ -94,14 +94,11 @@ test("delete refuses live or managed sessions and checks linked reviews before c
     { status: "queued" },
     { shellOpen: true },
     { preview: { status: "running" } },
-    { teamId: "team" },
-    { workflowId: "workflow" },
-    { missionId: "mission" },
   ]) {
     app.store.put("run", { ...run, ...changed });
     assert.throws(
       () => deleteSession(app, run.id, { approved: true }),
-      /Stop|Close|managed/,
+      /Stop|Close/,
     );
     assert.ok(!app.store.get("run", run.id).deletedAt);
   }
@@ -114,6 +111,165 @@ test("delete refuses live or managed sessions and checks linked reviews before c
   assert.throws(() => deleteSession(app, run.id, { approved: true }), /Stop/);
   assert.ok(!app.store.get("run", run.id).deletedAt);
   app.store.patch("run", review.id, { status: "draft" });
+});
+
+test("all idle chat types can move to Trash", async (t) => {
+  const { app } = await fixture(t);
+  const run = await quickSession(app, { approved: true });
+  for (const managed of [
+    { teamId: "team" },
+    { teamRole: "security" },
+    { teamInitial: true },
+    { workflowId: "workflow" },
+    { missionId: "mission" },
+    { sessionKind: "terminal" },
+  ]) {
+    app.store.put("run", { ...run, ...managed });
+    deleteSession(app, run.id, { approved: true });
+    assert.ok(app.store.get("run", run.id).deletedAt);
+    assert.equal(restoreSession(app, run.id).deletedAt, null);
+  }
+});
+
+test("workflow trash pauses queued work and does not restart it on restore", async (t) => {
+  const { app } = await fixture(t);
+  const run = await quickSession(app, { approved: true });
+  const other = app.engine.create(run.projectId, {
+    title: "Next task",
+    prompt: "Wait",
+  });
+  app.store.patch("run", run.id, { workflowId: "workflow" });
+  app.store.patch("run", other.id, {
+    workflowId: "workflow",
+    status: "queued",
+    followup: "Correct the failed check without expanding scope.",
+  });
+  app.store.put("workflow", {
+    id: "workflow",
+    projectId: run.projectId,
+    status: "running",
+    runIds: [run.id, other.id],
+    approvedAt: new Date().toISOString(),
+    validationCommand: app.store.get("project", run.projectId).validation,
+  });
+  app.workflows.busy = true;
+  assert.throws(
+    () => deleteSession(app, run.id, { approved: true }),
+    /Try Trash again/,
+  );
+  app.workflows.busy = false;
+  assert.ok(!app.store.get("run", run.id).deletedAt);
+  assert.equal(app.store.get("workflow", "workflow").status, "running");
+  deleteSession(app, run.id, { approved: true });
+  assert.equal(app.store.get("workflow", "workflow").status, "paused");
+  assert.equal(app.store.get("run", other.id).status, "paused");
+  assert.ok(!app.store.get("run", other.id).deletedAt);
+  assert.throws(() => app.workflows.approve("workflow"), /Restore.*Trash/);
+  await app.workflows.tick();
+  restoreSession(app, run.id);
+  await app.workflows.tick();
+  assert.equal(app.store.get("workflow", "workflow").status, "paused");
+  assert.equal(app.store.get("run", run.id).attempt, 0);
+  const paused = app.store.get("workflow", "workflow");
+  app.store.patch("workflow", "workflow", {
+    status: "needs-attention",
+    reason: "Scope violation from an agent finishing after Trash.",
+  });
+  assert.throws(() => app.workflows.approve("workflow"), /revised plan/);
+  assert.match(app.store.get("workflow", "workflow").reason, /Scope violation/);
+  deleteSession(app, run.id, { approved: true });
+  restoreSession(app, run.id);
+  assert.throws(() => app.workflows.approve("workflow"), /revised plan/);
+  assert.match(app.store.get("workflow", "workflow").reason, /Scope violation/);
+  app.store.put("workflow", paused);
+  const originalQueue = app.engine.queue;
+  const queued = [];
+  app.engine.queue = (key, followup) => queued.push({ key, followup });
+  try {
+    app.workflows.approve("workflow");
+  } finally {
+    app.engine.queue = originalQueue;
+  }
+  assert.equal(app.store.get("workflow", "workflow").status, "running");
+  assert.equal(app.store.get("workflow", "workflow").reason, null);
+  assert.deepEqual(queued, [
+    {
+      key: other.id,
+      followup: "Correct the failed check without expanding scope.",
+    },
+  ]);
+  // Keep this isolated synthetic plan from being reconciled by the timer.
+  app.store.patch("workflow", "workflow", { status: "needs-review" });
+});
+
+test("mission trash stops queued tasks and start refuses missing chats before queuing anything", async (t) => {
+  const { app } = await fixture(t);
+  const run = await quickSession(app, { approved: true });
+  const other = app.engine.create(run.projectId, {
+    title: "Next task",
+    prompt: "Wait",
+  });
+  app.store.patch("run", run.id, { missionId: "mission" });
+  app.store.patch("run", other.id, { missionId: "mission", status: "queued" });
+  app.store.put("mission", { id: "mission", projectId: run.projectId });
+  deleteSession(app, run.id, { approved: true });
+  assert.equal(app.store.get("run", other.id).status, "paused");
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}/api`;
+  const state = await fetch(base + "/state").then((r) => r.json());
+  const response = await fetch(base + "/missions/mission/start", {
+    method: "POST",
+    headers: { "x-fleet-token": state.csrf },
+  });
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /Restore.*Trash/);
+  assert.equal(app.store.get("run", other.id).status, "paused");
+});
+
+test("Trash pause is respected by an already-running queue dispatch", async (t) => {
+  const { app } = await fixture(t);
+  const run = await quickSession(app, { approved: true });
+  app.store.patch("run", run.id, { workflowId: "workflow" });
+  app.store.put("workflow", {
+    id: "workflow",
+    projectId: run.projectId,
+    status: "draft",
+  });
+  for (let i = 0; i < 2; i++) {
+    const task = app.engine.create(run.projectId, {
+      title: `Task ${i}`,
+      prompt: "Wait",
+    });
+    app.store.patch("run", task.id, {
+      workflowId: "workflow",
+      status: "queued",
+    });
+  }
+  let release, started;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise((resolve) => {
+    started = resolve;
+  });
+  const launched = [];
+  const original = app.engine.launch;
+  app.engine.launch = async (key) => {
+    launched.push(key);
+    started();
+    await gate;
+    app.store.patch("run", key, { status: "review" });
+  };
+  const pending = app.engine.tick();
+  try {
+    await ready;
+    deleteSession(app, run.id, { approved: true });
+  } finally {
+    release();
+    await pending;
+    app.engine.launch = original;
+  }
+  assert.equal(launched.length, 1);
 });
 
 test("delete/restore API enforces CSRF, hides deleted chats from state/search and blocks stale endpoints", async (t) => {

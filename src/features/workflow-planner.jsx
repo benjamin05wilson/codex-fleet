@@ -87,7 +87,7 @@ export function WorkflowPlanner({
               </li>
             ))}
           </ol>
-          {!w.approvedAt && (
+          {(!w.approvedAt || w.trashPause) && (
             <Button
               primary
               icon={Play}
@@ -98,7 +98,7 @@ export function WorkflowPlanner({
                 )
               }
             >
-              Approve plan & run
+              {w.trashPause ? "Resume workflow" : "Approve plan & run"}
             </Button>
           )}
         </section>

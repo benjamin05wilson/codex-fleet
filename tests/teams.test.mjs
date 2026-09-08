@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createApp } from "../server/app.mjs";
 import { git, snapshot } from "../server/git.mjs";
 import { parseReview } from "../server/teams.mjs";
+import { deleteSession, restoreSession } from "../server/workspace.mjs";
 const bin = fileURLToPath(new URL("./fixtures/codex.mjs", import.meta.url));
 async function until(fn, timeout = 20000) {
   const end = Date.now() + timeout;
@@ -63,6 +64,60 @@ async function setup(t, options = {}) {
   await until(() => !app.teams.busy);
   return { app, root, source, project, team, initial };
 }
+test("team helpers can be trashed individually and restored without restarting automatic work", async (t) => {
+  const { app, team, project } = await setup(t);
+  const key = team.members.security;
+  const before = app.store.get("run", key);
+  deleteSession(app, key, { approved: true });
+  assert.ok(app.store.get("run", key).deletedAt);
+  assert.equal(app.teams.get(project.id).enabled, false);
+  assert.ok(!app.store.get("run", team.members.developer).deletedAt);
+  assert.ok(!app.store.get("run", team.members.verification).deletedAt);
+  await app.teams.tick();
+  assert.equal(app.store.get("run", key).attempt, before.attempt);
+  await assert.rejects(
+    app.teams.control(project.id, "renew", { approved: true }),
+    /Restore.*Trash/,
+  );
+  const restored = restoreSession(app, key);
+  assert.equal(restored.threadId, before.threadId);
+  assert.equal(app.teams.get(project.id).enabled, false);
+  await app.teams.tick();
+  assert.equal(app.store.get("run", key).attempt, before.attempt);
+  await app.teams.control(project.id, "renew", { approved: true });
+  assert.equal(app.teams.get(project.id).enabled, true);
+  deleteSession(app, key, { approved: true });
+  deleteSession(app, team.members.developer, { approved: true });
+  assert.equal(app.store.get("run", key).deletionRootId, key);
+  assert.throws(() => restoreSession(app, key), /parent chat/);
+  restoreSession(app, team.members.developer);
+  assert.ok(app.store.get("run", key).deletedAt);
+  assert.ok(!app.store.get("run", team.members.verification).deletedAt);
+  restoreSession(app, key);
+  assert.equal(app.teams.get(project.id).enabled, false);
+});
+
+test("review startup rechecks Trash after awaiting the target snapshot", async (t) => {
+  const { app, team, project } = await setup(t);
+  const lead = app.store.get("run", team.members.developer);
+  const target = app.engine.create(project.id, {
+    title: "Mission task",
+    prompt: "Inspect",
+    missionId: "mission",
+  });
+  app.store.patch("run", target.id, {
+    worktree: lead.worktree,
+    base: lead.base,
+    status: "review",
+  });
+  const rounds = app.store.list("team-round").length;
+  const pending = app.teams.review(project.id, target.id);
+  deleteSession(app, target.id, { approved: true });
+  await assert.rejects(pending, /Wait for the current team sessions/);
+  assert.equal(app.store.list("team-round").length, rounds);
+  assert.ok(app.store.get("run", target.id).deletedAt);
+});
+
 test("team requires explicit approval and validates structured findings", async () => {
   assert.throws(() => parseReview('{"summary":"fake pass"}'), /invalid/);
   assert.throws(

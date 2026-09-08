@@ -943,18 +943,6 @@ function App() {
             setDeleteTarget(null);
             goRun(id);
           }}
-          onRemoveProject={
-            state.projects.some(
-              (p) => p.id === deleteTarget.projectId && p.kind !== "scratch",
-            )
-              ? () => {
-                  setProjectDeleteTarget(
-                    state.projects.find((p) => p.id === deleteTarget.projectId),
-                  );
-                  setDeleteTarget(null);
-                }
-              : undefined
-          }
         />
       )}
       {projectDeleteTarget && (

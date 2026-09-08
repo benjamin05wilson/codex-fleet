@@ -271,6 +271,14 @@ export class Teams {
         if (input.approved !== true)
           throw new Error("Approve another bounded review budget.");
         if (
+          Object.values(team.members).some(
+            (k) => this.store.get("run", k).deletedAt,
+          )
+        )
+          throw new Error(
+            "Restore this team's chats from Trash before resuming automatic reviews.",
+          );
+        if (
           Object.values(team.members).some((k) =>
             active(this.store.get("run", k)),
           )
@@ -381,6 +389,11 @@ export class Teams {
     // Recheck after async filesystem work, before obtaining the queue leases.
     if (
       this.closed ||
+      !this.get(team.projectId)?.enabled ||
+      this.store.get("run", target.id).deletedAt ||
+      Object.values(team.members).some(
+        (key) => this.store.get("run", key).deletedAt,
+      ) ||
       active(this.store.get("run", target.id)) ||
       this.engine.terminals?.has(target.worktree)
     )
@@ -580,6 +593,7 @@ export class Teams {
             .find(
               (r) =>
                 r.projectId === team.projectId &&
+                !r.deletedAt &&
                 r.status === "accepted" &&
                 r.acceptedSha &&
                 r.updatedAt >= team.createdAt &&
@@ -601,6 +615,7 @@ export class Teams {
           .filter(
             (r) =>
               r.projectId === team.projectId &&
+              !r.deletedAt &&
               !reviewer(r) &&
               !r.reviewOf &&
               r.sandbox === "workspace-write" &&
