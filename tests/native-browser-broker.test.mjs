@@ -93,7 +93,42 @@ test("cross-project, stale worker and completed-turn capabilities cannot dispatc
     broker.agent(a.token, { action: "snapshot" }),
     /expired/,
   );
+  assert.equal(broker.state("one").status, "open");
+  assert.equal(broker.desktop(desktop.token).projectId, "one");
   assert.equal(broker.desktop(desktop.token).queue.length, 0);
+});
+test("commands have no broker deadline and the page survives between chat turns", async (t) => {
+  const { broker, connection, runs, desktop } = fixture(t),
+    firstConnection = connection("a"),
+    pending = broker.agent(firstConnection.token, { action: "snapshot" });
+  const command = await broker.next(
+    desktop.token,
+    new AbortController().signal,
+  );
+  assert.equal("timer" in broker.desktop(desktop.token).current, false);
+  runs.get("a").status = "review";
+  assert.equal(broker.state("one").status, "open");
+  broker.result(desktop.token, {
+    id: command.id,
+    result: { text: "page" },
+  });
+  await assert.rejects(pending, /expired/);
+  assert.equal(broker.state("one").status, "open");
+
+  runs.get("a").status = "running";
+  runs.get("a").worker.identity = "a2";
+  const nextConnection = broker.connection(runs.get("a"), "a2"),
+    resumed = broker.agent(nextConnection.token, { action: "snapshot" });
+  const resumedCommand = await broker.next(
+    desktop.token,
+    new AbortController().signal,
+  );
+  broker.result(desktop.token, {
+    id: resumedCommand.id,
+    result: { text: "same page" },
+  });
+  assert.deepEqual(await resumed, { text: "same page" });
+  assert.equal(broker.state("one").status, "open");
 });
 test("queued commands are revalidated and disconnect rejects in-flight actions without replay", async (t) => {
   const { broker, connection, runs, desktop } = fixture(t),

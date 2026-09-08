@@ -82,7 +82,6 @@ export class NativeBrowserBroker {
     if (this.sessions.get(s.projectId) === s) this.sessions.delete(s.projectId);
     s.waiter?.finish(null);
     for (const task of [s.current, ...s.queue].filter(Boolean)) {
-      clearTimeout(task.timer);
       task.reject(
         failure(
           "Native browser disconnected. An in-flight action may have completed; inspect the page before retrying.",
@@ -170,7 +169,6 @@ export class NativeBrowserBroker {
       );
     return new Promise((resolve, reject) => {
       const task = { id: randomUUID(), input, token, resolve, reject };
-      task.timer = setTimeout(() => this.disconnect(s.token), 15000);
       s.queue.push(task);
       this.drain(s);
     });
@@ -182,7 +180,6 @@ export class NativeBrowserBroker {
       try {
         this.check(task.token);
       } catch (e) {
-        clearTimeout(task.timer);
         task.reject(e);
         continue;
       }
@@ -216,7 +213,6 @@ export class NativeBrowserBroker {
     if (!task || task.id !== id)
       throw failure("Browser result no longer belongs to an active command.");
     s.current = null;
-    clearTimeout(task.timer);
     try {
       this.check(task.token);
       if (error) task.reject(failure(String(error).slice(0, 500)));

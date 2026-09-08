@@ -903,6 +903,19 @@ test("desktop agent browser requests reveal the right chat from Home and reopen 
         ([input]) => input.action === "start",
       ),
     ).toBe(false);
+    const restores = window.fleetDesktop.nativeBrowser.mock.calls.filter(
+      ([input]) => input.action === "restore",
+    ).length;
+    reactAct(() =>
+      requested({ id: "third", projectId: project.id, runId: run.id }),
+    );
+    await waitFor(() =>
+      expect(
+        window.fleetDesktop.nativeBrowser.mock.calls.filter(
+          ([input]) => input.action === "restore",
+        ),
+      ).toHaveLength(restores + 1),
+    );
     app.unmount();
     expect(unsubscribe).toHaveBeenCalled();
   } finally {

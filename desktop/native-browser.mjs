@@ -59,7 +59,6 @@ export function createNativeBrowser({
     const c = current;
     if (!c) return;
     current = null;
-    clearTimeout(c.lease);
     if (!window.isDestroyed()) window.contentView.removeChildView(c.view);
     if (!c.view.webContents.isDestroyed())
       c.view.webContents.close({ waitForBeforeUnload: false });
@@ -189,7 +188,6 @@ export function createNativeBrowser({
       });
       // Return promptly, so renderer can place the view while navigation runs.
       if (!deferNavigation) web.loadURL(url.href).catch(() => {});
-      c.lease = setTimeout(hide, 2000);
       return state(c);
     } catch (error) {
       if (current && current.view === view) await close();
@@ -264,8 +262,6 @@ export function createNativeBrowser({
         case "state":
           return state(c);
         case "layout": {
-          clearTimeout(c.lease);
-          c.lease = setTimeout(hide, 1800);
           const b = input.bounds,
             [width, height] = window.getContentSize();
           if (input.visible !== true) {
@@ -288,7 +284,6 @@ export function createNativeBrowser({
               .filter(([key]) => ["x", "y", "width", "height"].includes(key))
               .map(([key, value]) => [key, Math.round(value)]),
           );
-          // A layout heartbeat renews the safety lease; it is not a resize.
           // Keep the compositor surface untouched unless geometry changed.
           if (
             !c.bounds ||

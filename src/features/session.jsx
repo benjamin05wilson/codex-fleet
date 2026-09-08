@@ -755,9 +755,10 @@ function RunDetail({
               {tab === "files" && <SessionFiles run={run} />}
               {tab === "browser" && (
                 <ProjectBrowser
-                  key={`${project.id}:${browserRequest?.id || "manual"}`}
+                  key={project.id}
                   project={project}
                   run={run}
+                  browserRequestId={browserRequest?.id}
                   onClosePanel={() => setTab("conversation")}
                   onEvidence={(text) => {
                     setFollowup(text);

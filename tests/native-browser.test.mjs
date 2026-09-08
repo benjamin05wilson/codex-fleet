@@ -229,8 +229,7 @@ test("native view uses a fresh protected session and exposes no preload or agent
   await assert.rejects(f.start(), /existing/);
 });
 
-test("native surface bounds are constrained, visibility lease expires, and close clears the session", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+test("native surface bounds are constrained, navigation hides it, and close clears the session", async (t) => {
   const f = fixture(t),
     { id } = await f.start(),
     view = f.views[0];
@@ -251,9 +250,7 @@ test("native surface bounds are constrained, visibility lease expires, and close
       f.manager.handle(f.event, { ...input, bounds }),
       /bounds/,
     );
-  t.mock.timers.tick(1800);
-  assert.equal(view.visible, false);
-  await f.manager.handle(f.event, input);
+  assert.equal(view.visible, true);
   f.window.webContents.emit("did-start-navigation");
   assert.equal(view.visible, false);
   await f.manager.handle(f.event, { action: "close", id });
@@ -265,8 +262,7 @@ test("native surface bounds are constrained, visibility lease expires, and close
   assert.notEqual(f.partitions[0].name, f.partitions[1].name);
 });
 
-test("layout heartbeats do not resize or re-show an unchanged native surface, but still renew its safety lease", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+test("layout updates do not resize or re-show an unchanged native surface", async (t) => {
   const f = fixture(t),
     { id } = await f.start(),
     view = f.views[0];
@@ -276,25 +272,18 @@ test("layout heartbeats do not resize or re-show an unchanged native surface, bu
     visible: true,
     bounds: { x: 10, y: 60, width: 900, height: 700 },
   };
-  for (let i = 0; i < 20; i++) {
-    await f.manager.handle(f.event, input);
-    t.mock.timers.tick(500);
-  }
+  for (let i = 0; i < 20; i++) await f.manager.handle(f.event, input);
   assert.deepEqual(view.boundsCalls, [input.bounds]);
   assert.deepEqual(view.visibilityCalls, [false, true]);
-  assert.equal(view.visible, true, "heartbeats must keep the surface visible");
+  assert.equal(view.visible, true);
   await f.manager.handle(f.event, {
     ...input,
     bounds: { ...input.bounds, width: 901 },
   });
   assert.equal(view.boundsCalls.length, 2);
   assert.equal(view.visibilityCalls.length, 2);
-  t.mock.timers.tick(1800);
-  assert.equal(
-    view.visible,
-    false,
-    "loss of heartbeat must still hide the view",
-  );
+  await f.manager.handle(f.event, { action: "layout", id, visible: false });
+  assert.equal(view.visible, false);
   await f.manager.handle(f.event, {
     ...input,
     bounds: { ...input.bounds, width: 901 },

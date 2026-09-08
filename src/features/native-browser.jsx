@@ -1,7 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Globe2, RefreshCw, X } from "lucide-react";
 
-export function NativeBrowser({ project, initialURL, onBack, onClosePanel }) {
+export function NativeBrowser({
+  project,
+  initialURL,
+  onBack,
+  onClosePanel,
+  activation,
+}) {
   const [state, setState] = useState(null),
     [url, setUrl] = useState(initialURL || ""),
     [error, setError] = useState(""),
@@ -10,29 +16,35 @@ export function NativeBrowser({ project, initialURL, onBack, onClosePanel }) {
   const host = useRef(null),
     alive = useRef(true),
     focused = useRef(false),
-    session = useRef(null);
+    session = useRef(null),
+    restoreRevision = useRef(0);
   const invoke = (input) => window.fleetDesktop.nativeBrowser(input);
   useEffect(() => {
     alive.current = true;
-    invoke({ action: "restore", projectId: project.id })
-      .then((next) => {
-        if (alive.current && next && !session.current) {
-          session.current = next.id;
-          setState(next);
-          setUrl(next.url || "");
-        }
-      })
-      .catch((e) => {
-        if (alive.current) setError(e.message);
-      });
     return () => {
       alive.current = false;
+      restoreRevision.current++;
       if (session.current)
         invoke({ action: "layout", id: session.current, visible: false }).catch(
           () => {},
         );
     };
   }, []);
+  useEffect(() => {
+    const revision = ++restoreRevision.current;
+    invoke({ action: "restore", projectId: project.id })
+      .then((next) => {
+        if (alive.current && revision === restoreRevision.current && next) {
+          session.current = next.id;
+          setState(next);
+          setUrl(next.url || "");
+        }
+      })
+      .catch((e) => {
+        if (alive.current && revision === restoreRevision.current)
+          setError(e.message);
+      });
+  }, [project.id, activation]);
   const action = async (action, extra = {}) => {
     setBusy(true);
     setError("");

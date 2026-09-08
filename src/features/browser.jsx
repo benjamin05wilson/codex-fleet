@@ -4,7 +4,12 @@ import "../browser.css";
 
 // Native rendering is the only product browser. Never start a streamed browser
 // when the desktop bridge is missing or when native startup fails.
-export function ProjectBrowser({ project, run, onClosePanel }) {
+export function ProjectBrowser({
+  project,
+  run,
+  onClosePanel,
+  browserRequestId,
+}) {
   if (typeof window.fleetDesktop?.nativeBrowser !== "function")
     return (
       <section className="project-browser" aria-label="Project browser">
@@ -36,6 +41,7 @@ export function ProjectBrowser({ project, run, onClosePanel }) {
       project={project}
       onClosePanel={onClosePanel}
       initialURL={run?.preview?.url || ""}
+      activation={browserRequestId}
     />
   );
 }
