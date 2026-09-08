@@ -1,7 +1,7 @@
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { watch } from "node:fs";
+import { watch, realpathSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
   mkdir,
@@ -677,7 +677,9 @@ export class Engine {
       return;
     try {
       const watcher = watch(
-        run.worktree,
+        // libuv's Windows watcher can abort the entire process for 8.3 aliases
+        // or mixed separators. Resolve the native long path at this boundary.
+        realpathSync.native(run.worktree),
         { recursive: true },
         (_event, filename) => {
           if (

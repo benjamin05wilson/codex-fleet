@@ -1,6 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  writeFile,
+  readFile,
+  rm,
+  symlink,
+} from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +40,45 @@ const completed = {
   type: "turn.completed",
   usage: { input_tokens: 20, output_tokens: 10 },
 };
+
+test("worktree watchers resolve aliases to native paths and still observe edits", async (t) => {
+  const { root, engine, store, run } = await fixture(t);
+  const directory = join(root, "long worktree directory");
+  await mkdir(directory);
+  let alias = join(root, "worktree-alias");
+  await symlink(
+    directory,
+    alias,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  if (process.platform === "win32") {
+    // Windows CI's temp root uses an 8.3 profile alias. Exercise short paths
+    // explicitly as well, without requiring symlink privileges on Windows.
+    alias = execFileSync(
+      "cmd.exe",
+      ["/d", "/c", `for %I in ("${alias}") do @echo %~sI`],
+      {
+        encoding: "utf8",
+        windowsHide: true,
+      },
+    )
+      .trim()
+      .replaceAll("\\", "/");
+  }
+  const canonical = realpathSync.native(directory);
+  const resolvePath = t.mock.method(realpathSync, "native");
+  const scan = t.mock.method(engine, "scan");
+  const watched = store.patch("run", run.id, { worktree: alias });
+  engine.watchWorktree(watched);
+  assert.equal(engine.watchers.has(run.id), true);
+  assert.equal(resolvePath.mock.calls[0].arguments[0], alias);
+  assert.equal(resolvePath.mock.calls[0].result, canonical);
+  await writeFile(join(directory, "observed.txt"), "changed");
+  await until(() => scan.mock.callCount() > 0);
+  assert.equal(scan.mock.calls[0].arguments[0], run.id);
+  await engine.shutdown();
+  assert.equal(engine.watchers.size, 0);
+});
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "fleet-worker-lifecycle-"));
