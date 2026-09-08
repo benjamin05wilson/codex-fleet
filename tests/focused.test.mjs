@@ -5,6 +5,7 @@ import {
   mkdir,
   writeFile,
   readFile,
+  rename,
   rm,
   readdir,
   chmod,
@@ -21,6 +22,7 @@ import { Terminals } from "../server/terminals.mjs";
 import { git, repository } from "../server/git.mjs";
 import { createApp } from "../server/app.mjs";
 import { searchWorkspace, previewFile } from "../server/search.mjs";
+import { stopProcessTree } from "../shared/platform.mjs";
 const bin = fileURLToPath(new URL("./fixtures/codex.mjs", import.meta.url));
 await chmod(bin, 0o700);
 async function until(predicate, timeout = 15000) {
@@ -210,10 +212,52 @@ test("worker crash becomes interrupted and never automatically retries", async (
     status = JSON.parse(
       await readFile(join(current.worker.directory, "status.json"), "utf8"),
     );
-  process.kill(-status.pid, "SIGKILL");
+  assert.equal(
+    await readFile(join(current.worker.directory, "worker.log"), "utf8"),
+    "",
+  );
+  await writeFile(
+    join(current.worker.directory, "worker.log"),
+    `Native crash context sk-proj-${"x".repeat(32)}`,
+  );
+  if (process.platform === "win32") stopProcessTree({ pid: status.pid });
+  else process.kill(-status.pid, "SIGKILL");
   await until(() => w.store.get("run", run.id).status === "interrupted", 16000);
-  assert.equal(w.store.get("run", run.id).attempt, 1);
+  const interrupted = w.store.get("run", run.id);
+  assert.equal(interrupted.attempt, 1);
+  assert.match(interrupted.error, /Worker diagnostics:\nNative crash context/);
+  assert.doesNotMatch(interrupted.error, /sk-proj-/);
   assert.equal(engine.processes.size, 0);
+});
+test("worker survives a transient heartbeat publication lock", async (t) => {
+  const w = await setup(t),
+    engine = w.createEngine();
+  const run = engine.create(w.project.id, {
+    title: "Heartbeat lock",
+    prompt: "TEST_HANG",
+  });
+  engine.queue(run.id);
+  await until(() => w.store.get("run", run.id).threadId);
+  const directory = w.store.get("run", run.id).worker.directory;
+  await rename(join(directory, "status.json"), join(directory, "status.saved"));
+  await mkdir(join(directory, "status.json"));
+  await until(async () =>
+    (await readFile(join(directory, "events.jsonl"), "utf8")).includes(
+      "Could not publish worker heartbeat",
+    ),
+  );
+  assert.equal(w.store.get("run", run.id).status, "running");
+  await rm(join(directory, "status.json"), { recursive: true, force: true });
+  await until(async () => {
+    try {
+      return JSON.parse(await readFile(join(directory, "status.json"), "utf8"))
+        .time;
+    } catch {
+      return false;
+    }
+  });
+  engine.stop(run.id);
+  await until(() => w.store.get("run", run.id).status === "paused");
 });
 test("overlapping writers queue while independent scopes can run", async (t) => {
   const w = await setup(t),

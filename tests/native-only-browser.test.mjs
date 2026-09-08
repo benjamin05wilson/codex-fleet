@@ -14,7 +14,14 @@ test("the product daemon uses the native broker and rejects retired launch, shar
   t.after(async () => {
     await app.close();
     app.store.close();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, {
+      recursive: true,
+      force: true,
+      // SQLite and security software can retain a just-closed Windows handle
+      // briefly. Treat that transient lock like the other Windows smoke tests.
+      maxRetries: 5,
+      retryDelay: 200,
+    });
   });
   assert.ok(app.browsers instanceof NativeBrowserBroker);
   assert.equal(app.engine.browsers.connection({ id: "run" }, {}), null);

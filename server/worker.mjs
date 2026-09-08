@@ -27,7 +27,9 @@ let seq = 0,
   finished = false,
   turnId,
   threadId,
-  interrupted = false;
+  interrupted = false,
+  timer,
+  deadline;
 const client = new CodexClient(config.bin, config.run.worktree, config.browser);
 const append = (event) =>
   appendFileSync(
@@ -35,18 +37,39 @@ const append = (event) =>
     JSON.stringify({ seq: ++seq, event: redactValue(event) }) + "\n",
     { mode: 0o600 },
   );
+let heartbeatWarning = false;
 const heartbeat = (extra) => {
-  writeFileSync(
-    join(directory, "status.tmp"),
-    JSON.stringify({
-      pid: process.pid,
-      time: Date.now(),
-      identity: config.identity,
-      ...extra,
-    }),
-    { mode: 0o600 },
-  );
-  renameSync(join(directory, "status.tmp"), join(directory, "status.json"));
+  try {
+    writeFileSync(
+      join(directory, "status.tmp"),
+      JSON.stringify({
+        pid: process.pid,
+        time: Date.now(),
+        identity: config.identity,
+        ...extra,
+      }),
+      { mode: 0o600 },
+    );
+    renameSync(join(directory, "status.tmp"), join(directory, "status.json"));
+    heartbeatWarning = false;
+    return true;
+  } catch (error) {
+    // Windows security/indexing software can briefly hold status.json and make
+    // its atomic replacement fail with EBUSY/EPERM. The previous heartbeat and
+    // PID remain valid, so a transient publication failure must not kill the
+    // execution owner.
+    if (!["EBUSY", "EPERM", "EACCES"].includes(error.code)) throw error;
+    if (!heartbeatWarning) {
+      heartbeatWarning = true;
+      try {
+        append({
+          type: "worker.diagnostic",
+          text: `Could not publish worker heartbeat (${error.code || "unknown"}); retrying.`,
+        });
+      } catch {}
+    }
+    return false;
+  }
 };
 const finish = (code, error) => {
   if (finished) return;
@@ -74,12 +97,18 @@ const stop = async () => {
 };
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
+process.on("uncaughtException", (error) =>
+  finish(1, error?.stack || error?.message || String(error)),
+);
+process.on("unhandledRejection", (error) =>
+  finish(1, error?.stack || error?.message || String(error)),
+);
 heartbeat({ finished: false });
-const timer = setInterval(() => {
+timer = setInterval(() => {
   heartbeat({ finished: false });
   if (existsSync(join(directory, "stop"))) stop();
 }, 500);
-const deadline = setTimeout(stop, config.timeoutMs || limits.timeoutMs);
+deadline = setTimeout(stop, config.timeoutMs || limits.timeoutMs);
 let usage = {};
 client.on("diagnostic", (text) =>
   append({ type: "worker.diagnostic", text: redact(text).slice(-2000) }),

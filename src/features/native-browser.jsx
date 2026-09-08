@@ -110,15 +110,19 @@ export function NativeBrowser({ project, initialURL, onBack, onClosePanel }) {
         [r.right - 2, r.bottom - 2],
         [r.left + r.width / 2, r.top + r.height / 2],
       ];
+      // Chromium returns fractional CSS pixels at non-integer Windows display
+      // scales. A panel flush with the viewport can therefore overshoot its
+      // nominal edge by a tiny fraction even though it is fully visible.
+      const edgeTolerance = 1;
       const visible =
         !closing &&
         !document.hidden &&
         r.width >= 32 &&
         r.height >= 32 &&
-        r.left >= 0 &&
-        r.top >= 0 &&
-        r.right <= innerWidth &&
-        r.bottom <= innerHeight &&
+        r.left >= -edgeTolerance &&
+        r.top >= -edgeTolerance &&
+        r.right <= innerWidth + edgeTolerance &&
+        r.bottom <= innerHeight + edgeTolerance &&
         !document.querySelector(
           '[role="dialog"], [role="menu"], dialog[open]',
         ) &&

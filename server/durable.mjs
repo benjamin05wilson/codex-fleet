@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
+import { openSync, closeSync } from "node:fs";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { redact } from "./sentinel.mjs";
 
 export async function launchWorker(engine, run, prompt) {
   const directory = join(engine.dataDir, "workers", run.id, randomUUID());
@@ -27,11 +29,25 @@ export async function launchWorker(engine, run, prompt) {
     startedAt: new Date().toISOString(),
     attempt: run.attempt + 1,
   });
-  const child = spawn(
-    process.execPath,
-    [fileURLToPath(new URL("./worker.mjs", import.meta.url)), directory],
-    { detached: true, windowsHide: true, stdio: "ignore", cwd: run.worktree },
-  );
+  // A durable worker outlives this daemon, so its stdio cannot use parent-owned
+  // pipes. Keep a bounded-on-read crash log instead of discarding the only
+  // diagnostics available when the worker exits before journalling its result.
+  const log = openSync(join(directory, "worker.log"), "a", 0o600);
+  let child;
+  try {
+    child = spawn(
+      process.execPath,
+      [fileURLToPath(new URL("./worker.mjs", import.meta.url)), directory],
+      {
+        detached: true,
+        windowsHide: true,
+        stdio: ["ignore", "ignore", log],
+        cwd: run.worktree,
+      },
+    );
+  } finally {
+    closeSync(log);
+  }
   child.on("error", (error) =>
     engine.store.patch("run", run.id, {
       status: "failed",
@@ -106,8 +122,20 @@ export function attachWorker(engine, run) {
         }
         clearInterval(state.poller);
         state.stopStatus = "interrupted";
-        state.stderr =
-          "Execution worker is unavailable. Resume explicitly; it has not been relaunched.";
+        const diagnostics = redact(
+          await readFile(
+            join(run.worker.directory, "worker.log"),
+            "utf8",
+          ).catch(() => ""),
+        )
+          .trim()
+          .slice(-4000);
+        state.stderr = [
+          "Execution worker is unavailable. Resume explicitly; it has not been relaunched.",
+          diagnostics ? `Worker diagnostics:\n${diagnostics}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n");
         await engine.finish(run.id, state, null);
       }
     } catch (error) {

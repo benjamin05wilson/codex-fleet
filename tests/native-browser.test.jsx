@@ -151,6 +151,40 @@ test("native view fills tall windows and the actual panel bottom without a gap o
   await waitFor(() => expect(surface.style.height).toBe("1400px"));
 });
 
+test("fractional display scaling keeps a viewport-edge native surface visible", async () => {
+  vi.stubGlobal("innerWidth", 1280);
+  vi.stubGlobal("innerHeight", 882);
+  HTMLElement.prototype.getBoundingClientRect.mockImplementation(function () {
+    const height = parseFloat(this.style.height) || 633.3333740234375;
+    return {
+      x: 609.0833740234375,
+      y: 248.6666717529297,
+      left: 609.0833740234375,
+      top: 248.6666717529297,
+      width: 670.9166870117188,
+      height,
+      right: 1280.0000610351562,
+      bottom: 882.0000457763672,
+    };
+  });
+  render(
+    <div className="tool-scroll">
+      <NativeBrowser {...props} />
+    </div>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
+  await screen.findByLabelText("Native browser surface");
+  await waitFor(() =>
+    expect(invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "layout",
+        id: "native-one",
+        visible: true,
+      }),
+    ),
+  );
+});
+
 test("one browser header keeps hide-panel separate from clearing the browser session", async () => {
   const onClosePanel = vi.fn();
   const view = render(<NativeBrowser {...props} onClosePanel={onClosePanel} />);

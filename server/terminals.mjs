@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import childProcess from "node:child_process";
 import { ACTIVE } from "./engine.mjs";
 import { processEnvironment, terminalCommand } from "../shared/platform.mjs";
 export class Terminals {
@@ -113,12 +114,33 @@ export class Terminals {
     } else if (action === "close") {
       s.closing = true;
       if (s.exitCode !== undefined) this.sessions.delete(runId);
-      else s.process.kill();
+      else this.terminate(s);
     }
     return { ok: true };
   }
+  terminate(session) {
+    if (process.platform === "win32") {
+      // node-pty's ConPTY kill path uses a short-lived AttachConsole helper to
+      // find descendants. When Fleet itself has a console, Windows may reject
+      // that helper's attachment even though ConPTY still closes correctly.
+      // Keep the supported node-pty cleanup path, but prevent that best-effort
+      // helper from dumping an uncaught native error into Fleet's own logs.
+      const fork = childProcess.fork;
+      childProcess.fork = (modulePath, args, options = {}) =>
+        fork(modulePath, args, {
+          ...options,
+          windowsHide: true,
+          stdio: ["ignore", "ignore", "ignore", "ipc"],
+        });
+      try {
+        session.process.kill();
+      } finally {
+        childProcess.fork = fork;
+      }
+    } else session.process.kill();
+  }
   close() {
-    for (const s of this.sessions.values()) s.process.kill();
+    for (const s of this.sessions.values()) this.terminate(s);
     this.sessions.clear();
   }
 }
