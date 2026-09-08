@@ -9,7 +9,6 @@ import {
   symlink,
 } from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,20 +51,12 @@ test("worktree watchers resolve aliases to native paths and still observe edits"
     process.platform === "win32" ? "junction" : "dir",
   );
   if (process.platform === "win32") {
-    // Windows CI's temp root uses an 8.3 profile alias. Exercise short paths
-    // explicitly as well, without requiring symlink privileges on Windows.
-    alias = execFileSync(
-      "cmd.exe",
-      ["/d", "/c", `for %I in ("${alias}") do @echo %~sI`],
-      {
-        encoding: "utf8",
-        windowsHide: true,
-      },
-    )
-      .trim()
-      .replaceAll("\\", "/");
+    // Preserve the runner's short temp-root spelling and exercise forward
+    // separators too. Junctions require no elevated symlink privilege.
+    alias = alias.replaceAll("\\", "/");
   }
   const canonical = realpathSync.native(directory);
+  assert.equal(realpathSync.native(alias), canonical);
   const resolvePath = t.mock.method(realpathSync, "native");
   const scan = t.mock.method(engine, "scan");
   const watched = store.patch("run", run.id, { worktree: alias });
