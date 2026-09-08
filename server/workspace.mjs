@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
-import { mkdir, open, lstat, realpath } from "node:fs/promises";
+import { mkdir, open, lstat, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { id, now } from "./store.mjs";
 import { git, repository, safeRead, createWorktree, inside } from "./git.mjs";
 import { searchablePath } from "./search.mjs";
@@ -245,6 +245,15 @@ export async function newWorkspaceSession(app, input) {
 const fileVersion = (content) =>
   createHash("sha256").update(content).digest("hex");
 
+// Serialize the version check and write, including requests through different
+// sessions that point to the same folder. A stale save must never report success.
+const fileWrites = new Map();
+const saveConflict = () =>
+  Object.assign(
+    new Error("This file changed since you opened it. Refresh before saving."),
+    { status: 409 },
+  );
+
 const validateProjectPath = (path) => {
   if (
     typeof path !== "string" ||
@@ -266,12 +275,17 @@ async function safeProjectParent(root, path) {
   let current = canonicalRoot;
   for (const part of path.split("/").slice(0, -1)) {
     const next = join(current, part);
-    const stat = await lstat(next).catch((error) => {
+    let stat = await lstat(next).catch((error) => {
       if (error.code !== "ENOENT") throw error;
       return null;
     });
-    if (!stat) await mkdir(next);
-    else if (!stat.isDirectory() || stat.isSymbolicLink())
+    if (!stat) {
+      await mkdir(next).catch((error) => {
+        if (error.code !== "EEXIST") throw error;
+      });
+      stat = await lstat(next);
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink())
       throw new Error("A parent path is not a real project folder.");
     current = await realpath(next);
     if (!inside(canonicalRoot, current))
@@ -284,10 +298,35 @@ export async function writeProjectEntry(project, input) {
   if (project.removedAt)
     throw new Error("Open this project before editing it.");
   const path = validateProjectPath(input.path);
-  const root = await safeProjectParent(project.path, path);
+  if (!["file", "folder"].includes(input.kind))
+    throw new Error("Choose a file or folder.");
+  if (
+    input.kind === "file" &&
+    (typeof input.content !== "string" ||
+      Buffer.byteLength(input.content, "utf8") > 160_000)
+  )
+    throw new Error("Files must contain no more than 160,000 UTF-8 bytes.");
+  const root = await realpath(project.path);
   const target = resolve(root, path);
   if (!inside(root, target))
     throw new Error("Path is outside the project folder.");
+  // Case-fold on platforms commonly using case-insensitive filesystems. This
+  // merely serializes distinct case-sensitive files too; it never changes paths.
+  const key = process.platform === "linux" ? target : target.toLowerCase();
+  const previous = fileWrites.get(key) || Promise.resolve();
+  const pending = previous
+    .catch(() => {})
+    .then(() => writeProjectEntryLocked(root, path, target, input));
+  fileWrites.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    if (fileWrites.get(key) === pending) fileWrites.delete(key);
+  }
+}
+
+async function writeProjectEntryLocked(root, path, target, input) {
+  await safeProjectParent(root, path);
   if (input.kind === "folder") {
     const stat = await lstat(target).catch((error) => {
       if (error.code !== "ENOENT") throw error;
@@ -312,9 +351,6 @@ export async function writeProjectEntry(project, input) {
     await handle.close();
     return { path, kind: "folder" };
   }
-  if (input.kind !== "file") throw new Error("Choose a file or folder.");
-  if (typeof input.content !== "string" || input.content.length > 160_000)
-    throw new Error("Files must contain no more than 160,000 characters.");
   const existing = await lstat(target).catch((error) => {
     if (error.code !== "ENOENT") throw error;
     return null;
@@ -328,24 +364,48 @@ export async function writeProjectEntry(project, input) {
     (existing && input.baseVersion !== fileVersion(current)) ||
     (!existing && input.baseVersion !== null)
   )
-    throw Object.assign(
-      new Error(
-        "This file changed since you opened it. Refresh before saving.",
-      ),
-      { status: 409 },
-    );
+    throw saveConflict();
+  // Existing files are replaced only after a complete write, so a failed write
+  // cannot truncate the user's original. New files use exclusive creation.
+  const staged = existing
+    ? join(dirname(target), `.fleet-save-${randomUUID()}.tmp`)
+    : target;
   const handle = await open(
-    target,
+    staged,
     constants.O_WRONLY |
       constants.O_CREAT |
-      constants.O_TRUNC |
+      constants.O_EXCL |
       constants.O_NOFOLLOW,
     0o600,
-  );
+  ).catch((error) => {
+    if (error.code === "EEXIST") throw saveConflict();
+    throw error;
+  });
   try {
-    await handle.writeFile(input.content, "utf8");
+    try {
+      await handle.writeFile(input.content, "utf8");
+      if (existing) await handle.chmod(existing.mode & 0o777);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    if (existing) {
+      // Catch external edits made while preparing the replacement as well as
+      // concurrent Fleet requests. Never follow a replaced parent symlink.
+      await safeProjectParent(root, path);
+      const latest = await safeRead(root, path).catch((error) => {
+        if (error.code === "ENOENT") throw saveConflict();
+        throw error;
+      });
+      if (latest === null || fileVersion(latest) !== input.baseVersion)
+        throw saveConflict();
+      await rename(staged, target);
+    }
   } finally {
-    await handle.close();
+    if (existing)
+      await unlink(staged).catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+      });
   }
   return {
     path,

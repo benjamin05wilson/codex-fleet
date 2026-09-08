@@ -7,6 +7,7 @@ import {
   mkdir,
   symlink,
   readFile,
+  realpath,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,11 +61,15 @@ test("deleting chats is recoverable, durable and preserves worktrees, history an
     await readFile(join(run.worktree, "keep.txt"), "utf8"),
     "uncommitted work",
   );
-  assert.ok(
-    (await git(project.path, ["worktree", "list", "--porcelain"])).includes(
-      run.worktree,
-    ),
+  const worktrees = (
+    await git(project.path, ["worktree", "list", "--porcelain", "-z"])
+  ).split("\0");
+  const worktreePaths = await Promise.all(
+    worktrees
+      .filter((entry) => entry.startsWith("worktree "))
+      .map((entry) => realpath(entry.slice("worktree ".length))),
   );
+  assert.ok(worktreePaths.includes(await realpath(run.worktree)));
   assert.ok(
     app.store.events({ runId: run.id }).some((e) => e.type === "test.history"),
   );
@@ -224,20 +229,37 @@ async function fixture(t) {
     bin: fileURLToPath(new URL("./fixtures/codex.mjs", import.meta.url)),
   });
   t.after(async () => {
+    // Keep SQLite alive until terminal exit callbacks have finished, including
+    // when the terminal test fails before explicitly closing its shell.
+    const terminals = [...app.engine.terminals.sessions.values()];
     await app.close();
+    await until(() =>
+      terminals.every((session) => session.exitCode !== undefined),
+    );
     app.store.close();
-    await rm(root, { recursive: true, force: true });
+    // Windows can briefly retain handles after shutdown. Retry removal only
+    // after both the HTTP app and its SQLite connection have been closed.
+    await rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   return { app, root };
 }
-async function until(fn) {
-  const end = Date.now() + 15000;
+async function until(
+  fn,
+  timeout = 15000,
+  message = "Timed out waiting for fixture session",
+) {
+  const end = Date.now() + timeout;
   while (Date.now() < end) {
-    const result = fn();
+    const result = await fn();
     if (result) return result;
     await delay(50);
   }
-  throw new Error("Timed out waiting for fixture session");
+  throw new Error(message);
 }
 test("sidebar actions prepare distinct workspaces without changing source edits or starting a model", async (t) => {
   const { app, root } = await fixture(t);
@@ -276,9 +298,10 @@ test("sidebar actions prepare distinct workspaces without changing source edits 
     (await git(worktree.worktree, ["branch", "--show-current"])).trim(),
     worktree.branch,
   );
-  await assert.rejects(readFile(join(worktree.worktree, "user.txt")), {
-    code: "ENOENT",
-  });
+  assert.equal(
+    await readFile(join(worktree.worktree, "user.txt"), "utf8"),
+    "staged user work",
+  );
   assert.equal(main.worktree, project.path);
   assert.equal(main.workspaceKind, "main");
   assert.equal(terminal.worktree, project.path);
@@ -341,29 +364,70 @@ test("new-session API enforces CSRF and terminals own the actual project folder 
   const opened = await post(`/runs/${terminal.id}/terminal/open`, {});
   assert.equal(opened.status, 200);
   const { lease } = await opened.json();
-  assert.throws(() => app.engine.queue(main.id, "Explain"), /shell/);
-  await post(`/runs/${terminal.id}/terminal/input`, {
-    lease,
-    data: "pwd > shell-location.txt\n",
-  });
-  await until(() => app.engine.terminals.get(terminal.id).events.length);
-  let location;
-  for (let i = 0; i < 50; i++) {
-    location = await readFile(
-      join(project.path, "shell-location.txt"),
-      "utf8",
-    ).catch(() => "");
-    if (location.trim()) break;
-    await delay(50);
+  if (process.platform === "win32") {
+    // There is no xterm renderer in this API test to answer PowerShell's
+    // cursor-position queries. Match the Windows ConPTY smoke-test client,
+    // including a query that arrived before the HTTP open response returned.
+    const session = app.engine.terminals.get(terminal.id);
+    let pending = "";
+    const answerCursor = (data) => {
+      pending += data;
+      if (pending.includes("\x1b[6n")) {
+        session.process.write("\x1b[1;1R");
+        pending = "";
+      } else pending = pending.slice(-8);
+    };
+    const subscription = session.process.onData(answerCursor);
+    t.after(() => subscription.dispose());
+    for (const event of session.events) answerCursor(event.data);
   }
+  assert.throws(() => app.engine.queue(main.id, "Explain"), /shell/);
+  assert.equal(
+    (
+      await post(`/runs/${terminal.id}/terminal/input`, {
+        lease,
+        // PowerShell's pwd returns a formatted PathInfo object and > defaults to
+        // UTF-16 on Windows PowerShell. Write the raw path with explicit UTF-8.
+        data:
+          process.platform === "win32"
+            ? "[System.IO.File]::WriteAllText((Join-Path (Get-Location).Path 'shell-location.txt'), (Get-Location).Path, [System.Text.Encoding]::UTF8)\r"
+            : "pwd > shell-location.txt\r",
+      })
+    ).status,
+    200,
+  );
+  let location = "";
+  await until(
+    async () => {
+      location = await readFile(
+        join(project.path, "shell-location.txt"),
+        "utf8",
+      ).catch((error) => {
+        if (error.code === "ENOENT") return "";
+        throw error;
+      });
+      // Wait for command execution, not merely a prompt or echoed input. trim
+      // also removes the UTF-8 BOM written by .NET Framework on Windows.
+      return location.trim() === project.path;
+    },
+    process.platform === "win32" ? 45000 : 15000,
+    "Terminal did not write its actual project working directory",
+  );
   assert.equal(location.trim(), project.path);
   assert.equal(
     (await post(`/runs/${terminal.id}/terminal/close`, { lease: "wrong" }))
       .status,
     400,
   );
-  await post(`/runs/${terminal.id}/terminal/close`, { lease });
-  await until(() => !app.store.get("run", terminal.id).shellOpen);
+  assert.equal(
+    (await post(`/runs/${terminal.id}/terminal/close`, { lease })).status,
+    200,
+  );
+  await until(
+    () =>
+      !app.store.get("run", terminal.id).shellOpen &&
+      !app.engine.terminals.sessions.has(terminal.id),
+  );
   assert.equal(app.store.get("run", terminal.id).attempt, 0);
 });
 test("explicit idle settings apply to the next turn and can be remembered without starting it", async (t) => {
@@ -560,7 +624,18 @@ test("session files reflect untracked work and reject private paths, traversal a
   await mkdir(join(run.worktree, ".ssh"));
   await writeFile(join(run.worktree, ".ssh", "config"), "private-host");
   await writeFile(join(root, "outside.txt"), "external-private-content");
-  await symlink(join(root, "outside.txt"), join(run.worktree, "link.txt"));
+  let linkedPath = "link.txt";
+  if (process.platform === "win32") {
+    // Junctions exercise parent-link traversal without requiring the Windows
+    // symlink privilege or Developer Mode needed for file symlinks.
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    await writeFile(join(outside, "private.txt"), "external-private-content");
+    await symlink(outside, join(run.worktree, "linked-dir"), "junction");
+    linkedPath = "linked-dir/private.txt";
+  } else {
+    await symlink(join(root, "outside.txt"), join(run.worktree, linkedPath));
+  }
   const listing = await sessionFiles(run);
   assert.ok(listing.files.includes("app.js"));
   assert.ok(
@@ -572,9 +647,14 @@ test("session files reflect untracked work and reject private paths, traversal a
   );
   for (const path of [".env", ".ssh/config", "../outside.txt", "/etc/passwd"])
     await assert.rejects(sessionFiles(run, path), /excluded|outside/);
-  assert.ok(
-    !(await sessionFiles(run, "link.txt")).content.includes(
-      "external-private-content",
-    ),
-  );
+  if (listing.files.includes(linkedPath)) {
+    assert.equal(
+      (await sessionFiles(run, linkedPath)).content,
+      "Preview unavailable: binary, linked or oversized file.",
+    );
+  } else {
+    // Git may omit junction contents entirely; direct requests must still be
+    // rejected rather than following the link outside the session.
+    await assert.rejects(sessionFiles(run, linkedPath), /excluded|outside/);
+  }
 });

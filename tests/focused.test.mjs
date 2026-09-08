@@ -335,12 +335,15 @@ test("worker crash becomes interrupted and never automatically retries", async (
   engine.queue(run.id);
   await until(() => w.store.get("run", run.id).threadId);
   const current = w.store.get("run", run.id),
+    worker = engine.processes.get(run.id),
     status = JSON.parse(
       await readFile(join(current.worker.directory, "status.json"), "utf8"),
     );
-  assert.equal(
+  // Some test runners set both color variables. Permit only Node's known
+  // startup warning; unexpected worker diagnostics must still fail this check.
+  assert.match(
     await readFile(join(current.worker.directory, "worker.log"), "utf8"),
-    "",
+    /^(?:\(node:\d+\) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set\.\r?\n\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\r?\n)?$/,
   );
   await writeFile(
     join(current.worker.directory, "worker.log"),
@@ -353,6 +356,10 @@ test("worker crash becomes interrupted and never automatically retries", async (
   assert.equal(interrupted.attempt, 1);
   assert.match(interrupted.error, /Worker diagnostics:\nNative crash context/);
   assert.doesNotMatch(interrupted.error, /sk-proj-/);
+  // Status is committed before the receipt finishes. Keep tracking the worker
+  // until its receipt and poller settle, as production shutdown must do too.
+  await until(() => !engine.workers.has(worker), 5000);
+  assert.equal(worker.disposed, true);
   assert.equal(engine.processes.size, 0);
 });
 test("worker survives a transient heartbeat publication lock", async (t) => {
@@ -528,34 +535,38 @@ test("workflow rejects cycles, oversized plans and missing acceptance checks", a
 });
 test("API duplicate identities replay a result and reject changed payloads", async (t) => {
   const w = await setup(t);
-  const app = await createApp({
-    dataDir: join(w.root, "http"),
-    staticDir: join(w.root, "static"),
-    bin,
-  });
-  await new Promise((r) => app.server.listen(0, "127.0.0.1", r));
-  t.after(async () => {
-    await app.close();
-    app.store.close();
-  });
-  const base = `http://127.0.0.1:${app.server.address().port}`;
-  const state = await fetch(base + "/api/state").then((r) => r.json());
-  const headers = {
-    "Content-Type": "application/json",
-    "X-Fleet-Token": state.csrf,
-    "Idempotency-Key": "stable-test-request",
-  };
-  const send = (path) =>
-    fetch(base + "/api/projects", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ path }),
+  // Close the HTTP app's database before setup's outer cleanup removes its
+  // parent directory; Windows does not allow unlinking an open SQLite file.
+  await t.test("requests replay without duplicate mutations", async (t) => {
+    const app = await createApp({
+      dataDir: join(w.root, "http"),
+      staticDir: join(w.root, "static"),
+      bin,
     });
-  const first = await send(w.source),
-    second = await send(w.source);
-  assert.equal(first.status, 201);
-  assert.deepEqual(await first.json(), await second.json());
-  assert.equal((await send("/another/path")).status, 409);
+    await new Promise((r) => app.server.listen(0, "127.0.0.1", r));
+    t.after(async () => {
+      await app.close();
+      app.store.close();
+    });
+    const base = `http://127.0.0.1:${app.server.address().port}`;
+    const state = await fetch(base + "/api/state").then((r) => r.json());
+    const headers = {
+      "Content-Type": "application/json",
+      "X-Fleet-Token": state.csrf,
+      "Idempotency-Key": "stable-test-request",
+    };
+    const send = (path) =>
+      fetch(base + "/api/projects", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ path }),
+      });
+    const first = await send(w.source),
+      second = await send(w.source);
+    assert.equal(first.status, 201);
+    assert.deepEqual(await first.json(), await second.json());
+    assert.equal((await send("/another/path")).status, 409);
+  });
 });
 test("interactive terminal requires a single owner and invalidates checks", async (t) => {
   const w = await setup(t),

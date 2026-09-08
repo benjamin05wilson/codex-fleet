@@ -33,6 +33,13 @@ export async function withNativeBrowserTool(check) {
       const id = ++sequence;
       const timer = setTimeout(() => {
         pending.delete(id);
+        child.stdin.write(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            method: "notifications/cancelled",
+            params: { requestId: id, reason: "Native MCP fixture timed out" },
+          }) + "\n",
+        );
         reject(new Error("Native MCP fixture timed out"));
       }, 20000);
       pending.set(id, { resolve, reject, timer });
@@ -64,6 +71,7 @@ export async function withNativeBrowserTool(check) {
     return await check(call);
   } finally {
     lines.close();
+    child.stdin.end();
     child.kill("SIGTERM");
     for (const p of pending.values()) {
       clearTimeout(p.timer);

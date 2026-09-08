@@ -63,7 +63,8 @@ const heartbeat = (extra) => {
     // its atomic replacement fail with EBUSY/EPERM. The previous heartbeat and
     // PID remain valid, so a transient publication failure must not kill the
     // execution owner.
-    if (!["EBUSY", "EPERM", "EACCES"].includes(error.code)) throw error;
+    if (!["EBUSY", "EPERM", "EACCES", "EISDIR"].includes(error.code))
+      throw error;
     if (!heartbeatWarning) {
       heartbeatWarning = true;
       try {
@@ -83,9 +84,11 @@ const finish = (code, error) => {
   clearTimeout(deadline);
   const child = client.child;
   let published = false;
+  let publishTimeout;
   const publish = () => {
     if (published) return;
     published = true;
+    clearTimeout(publishTimeout);
     append({
       type: "worker.exit",
       exitCode: code,
@@ -102,7 +105,7 @@ const finish = (code, error) => {
   if (!child || child.exitCode !== null) publish();
   else {
     child.once("close", publish);
-    setTimeout(publish, 5000);
+    publishTimeout = setTimeout(publish, 5000);
   }
 };
 const stop = async () => {
@@ -273,6 +276,10 @@ const resume = async () => {
     )
       throw new Error("Invalid durable worker command.");
     validatePermissions(command.run);
+    // Claim the command before an async model/thread change can publish another
+    // heartbeat describing the previous turn as idle.
+    idle = false;
+    heartbeat({ finished: false, idle: false });
     if (command.run.model !== currentRun.model) {
       const result = await client.request("thread/resume", {
         ...optionsFor(command.run),

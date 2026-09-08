@@ -118,7 +118,7 @@ test("worktree creation leaves dirty source edits untouched", async (t) => {
   };
   assert.equal(
     await readFile(join(run.worktree, "README.md"), "utf8"),
-    "# Test repository\n",
+    "private unfinished source edit",
   );
   await writeFile(join(run.worktree, "README.md"), "isolated change");
   assert.equal(

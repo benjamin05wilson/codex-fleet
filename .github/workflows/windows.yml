@@ -20,6 +20,7 @@ jobs:
       - run: git config --global user.email "fleet-ci@example.invalid"
       - run: npm run test:windows
       - run: node --test tests/auth.test.mjs tests/windows-branding.test.mjs tests/desktop.test.mjs
+      - run: node --test --test-timeout=90000 tests/workspace-files.test.mjs tests/worker-lifecycle.test.mjs tests/terminal-lifecycle.test.mjs tests/focused.test.mjs tests/teams.test.mjs tests/shutdown.test.mjs tests/workspace.test.mjs
       - run: npm run test:ui
       - run: npm run build
       - run: node tests/live-native-browser.mjs --run --ui --shared --auto-open --full-app

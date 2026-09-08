@@ -24,7 +24,11 @@ import {
 import { Preview } from "../src/features/preview.jsx";
 import { HomePage } from "../src/features/home.jsx";
 import { BrainView } from "../src/features/brain.jsx";
-import { buildFileTree, CodeExplorer } from "../src/features/code-explorer.jsx";
+import {
+  buildFileTree,
+  CodeExplorer,
+  ProjectCodeExplorer,
+} from "../src/features/code-explorer.jsx";
 import {
   createMotion,
   tickMotion,
@@ -2327,7 +2331,13 @@ test("project code explorer builds folders and opens current project files", asy
   await user.click(screen.getByRole("button", { name: "Expand src" }));
   await user.click(screen.getByRole("button", { name: "Open src/app.js" }));
   expect(await screen.findByText("const fleet = true;")).toBeTruthy();
-  expect(screen.getByText("READ ONLY")).toBeTruthy();
+  expect(
+    screen.getByRole("textbox", { name: "Edit src/app.js" }).readOnly,
+  ).toBe(false);
+  expect(screen.getByText("SAVED")).toBeTruthy();
+  expect(
+    screen.getByRole("button", { name: "Save", exact: true }).disabled,
+  ).toBe(true);
   expect(localStorage.getItem("fleet.code-file.project-code")).toBe(
     "src/app.js",
   );
@@ -2341,7 +2351,376 @@ test("project code explorer builds folders and opens current project files", asy
   expect(screen.queryByText("README.md")).toBeNull();
 });
 
-test("the top project bar opens and closes the code explorer beside Brain", async () => {
+// Deliberately control save completion independently of typing and navigation.
+function mockCodeFiles({ save, list = ["app.js", "other.js"] } = {}) {
+  const request = vi.fn(async (url, options) => {
+    const parsed = new URL(url, "http://localhost");
+    const path = parsed.searchParams.get("path");
+    const body = options?.body && JSON.parse(options.body);
+    if (options?.method === "PUT") return save(body);
+    return {
+      ok: true,
+      json: async () =>
+        path ? { content: `original ${path}`, version: "v1" } : { files: list },
+    };
+  });
+  vi.stubGlobal("fetch", request);
+  return request;
+}
+const codeProject = {
+  id: "draft-project",
+  name: "Draft project",
+  path: "/draft-project",
+};
+
+test("save completion preserves newer typing and advances the version for the next save", async () => {
+  let complete;
+  const save = vi.fn(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+  );
+  const request = mockCodeFiles({ save });
+  render(<CodeExplorer project={codeProject} initialFile="app.js" />);
+  const editor = await screen.findByRole("textbox", { name: "Edit app.js" });
+  fireEvent.change(editor, { target: { value: "first edit" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+  fireEvent.change(editor, { target: { value: "newer typing" } });
+  await reactAct(async () =>
+    complete({
+      ok: true,
+      json: async () => ({ content: "first edit", version: "v2" }),
+    }),
+  );
+  expect(screen.getByRole("textbox", { name: "Edit app.js" })).toBe(editor);
+  expect(editor.value).toBe("newer typing");
+  expect(screen.getByText("UNSAVED")).toBeTruthy();
+  expect(
+    request.mock.calls.filter(
+      ([url, options]) => url.includes("path=") && options?.method !== "PUT",
+    ),
+  ).toHaveLength(1);
+  fireEvent.keyDown(editor, { key: "s", ctrlKey: true });
+  expect(save).toHaveBeenLastCalledWith({
+    path: "app.js",
+    kind: "file",
+    content: "newer typing",
+    baseVersion: "v2",
+  });
+  await reactAct(async () =>
+    complete({
+      ok: true,
+      json: async () => ({ content: "newer typing", version: "v3" }),
+    }),
+  );
+  expect(screen.getByText("SAVED")).toBeTruthy();
+});
+
+test("a pending save follows its draft across editor unmount and does not replace another file", async () => {
+  let complete;
+  const save = vi.fn(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+  );
+  mockCodeFiles({ save });
+  const first = render(
+    <CodeExplorer project={codeProject} initialFile="app.js" />,
+  );
+  fireEvent.change(
+    await screen.findByRole("textbox", { name: "Edit app.js" }),
+    { target: { value: "submitted" } },
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+  first.unmount();
+  render(<CodeExplorer project={codeProject} initialFile="app.js" />);
+  const editor = await screen.findByRole("textbox", { name: "Edit app.js" });
+  expect(editor.value).toBe("submitted");
+  expect(screen.getByRole("button", { name: "Saving…" }).disabled).toBe(true);
+  fireEvent.change(editor, { target: { value: "typed after reopening" } });
+  fireEvent.click(await screen.findByRole("button", { name: "Open other.js" }));
+  const other = await screen.findByRole("textbox", { name: "Edit other.js" });
+  fireEvent.change(other, { target: { value: "other draft" } });
+  await reactAct(async () =>
+    complete({
+      ok: true,
+      json: async () => ({ content: "submitted", version: "v2" }),
+    }),
+  );
+  expect(other.value).toBe("other draft");
+  fireEvent.click(screen.getByRole("button", { name: "Open app.js" }));
+  expect(
+    (await screen.findByRole("textbox", { name: "Edit app.js" })).value,
+  ).toBe("typed after reopening");
+  fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+  expect(save).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      content: "typed after reopening",
+      baseVersion: "v2",
+    }),
+  );
+  await reactAct(async () =>
+    complete({
+      ok: true,
+      json: async () => ({ content: "typed after reopening", version: "v3" }),
+    }),
+  );
+});
+
+test.each(["File changed on disk", "File no longer exists"])(
+  "failed save (%s) keeps an editable draft and its original version across unmount",
+  async (message) => {
+    const save = vi.fn(async () => ({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: message }),
+    }));
+    mockCodeFiles({ save });
+    const first = render(
+      <CodeExplorer project={codeProject} initialFile="app.js" />,
+    );
+    const editor = await screen.findByRole("textbox", { name: "Edit app.js" });
+    fireEvent.change(editor, { target: { value: "my conflicted draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+    expect((await screen.findByRole("alert")).textContent).toContain(message);
+    expect(screen.getByRole("textbox", { name: "Edit app.js" })).toBe(editor);
+    fireEvent.change(editor, { target: { value: "continued editing" } });
+    first.unmount();
+    // The file may disappear from the listing after an external change.
+    mockCodeFiles({ save, list: [] });
+    render(<CodeExplorer project={codeProject} />);
+    await screen.findByText("No files in this project.");
+    expect(screen.getByRole("textbox", { name: "Edit app.js" }).value).toBe(
+      "continued editing",
+    );
+    expect(screen.getByRole("alert").textContent).toContain(message);
+    fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+    await screen.findByRole("alert");
+    expect(save).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        content: "continued editing",
+        baseVersion: "v1",
+      }),
+    );
+  },
+);
+
+test("a delayed GET cannot overwrite a draft loaded and edited by a sibling editor", async () => {
+  let finishGet;
+  let reads = 0;
+  const request = vi.fn(async (url, options) => {
+    if (options?.method === "PUT") {
+      const body = JSON.parse(options.body);
+      return {
+        ok: true,
+        json: async () => ({ content: body.content, version: "v3" }),
+      };
+    }
+    if (url.includes("path=")) {
+      if (++reads === 1)
+        return new Promise((resolve) => {
+          finishGet = resolve;
+        });
+      return {
+        ok: true,
+        json: async () => ({ content: "newer disk content", version: "v2" }),
+      };
+    }
+    return { ok: true, json: async () => ({ files: ["app.js"] }) };
+  });
+  vi.stubGlobal("fetch", request);
+  const first = render(
+    <CodeExplorer project={codeProject} initialFile="app.js" />,
+  );
+  expect(within(first.container).getByText("Loading file…")).toBeTruthy();
+  const sibling = render(
+    <CodeExplorer project={codeProject} initialFile="app.js" />,
+  );
+  const editor = await within(sibling.container).findByRole("textbox", {
+    name: "Edit app.js",
+  });
+  fireEvent.change(editor, { target: { value: "sibling draft" } });
+  await reactAct(async () =>
+    finishGet({
+      ok: true,
+      json: async () => ({ content: "stale disk content", version: "v1" }),
+    }),
+  );
+  expect(
+    within(first.container).getByRole("textbox", { name: "Edit app.js" }).value,
+  ).toBe("sibling draft");
+  expect(editor.value).toBe("sibling draft");
+  fireEvent.click(
+    within(sibling.container).getByRole("button", {
+      name: "Save",
+      exact: true,
+    }),
+  );
+  await within(sibling.container).findByText("SAVED");
+  const write = request.mock.calls.find(
+    ([, options]) => options?.method === "PUT",
+  );
+  expect(JSON.parse(write[1].body)).toEqual(
+    expect.objectContaining({ content: "sibling draft", baseVersion: "v2" }),
+  );
+});
+
+test("session file drafts survive closing their dialog and unmounting the session", async () => {
+  const user = userEvent.setup();
+  const run = {
+    id: "draft-session",
+    projectId: codeProject.id,
+    title: "Session draft",
+    status: "review",
+    prompt: "Edit a file",
+    worktree: "/session-draft",
+    files: [],
+    scopes: [],
+    dependencies: [],
+    usage: {},
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url) => ({
+      ok: true,
+      json: async () =>
+        url.includes("path=")
+          ? { content: "original app.js", version: "v1" }
+          : url.includes("/files")
+            ? { files: ["app.js"] }
+            : {
+                ...run,
+                events: [
+                  {
+                    seq: 1,
+                    type: "item.completed",
+                    data: {
+                      item: {
+                        type: "agent_message",
+                        text: "See [app.js](app.js).",
+                      },
+                    },
+                  },
+                ],
+              },
+    })),
+  );
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  const props = {
+    runId: run.id,
+    project: codeProject,
+    state: { runs: [run], findings: [] },
+    act: (fn) => fn(),
+    goRun: () => {},
+    onSettings: () => {},
+  };
+  const first = render(<RunDetail {...props} />);
+  await user.click(
+    await screen.findByRole("button", { name: "app.js", exact: true }),
+  );
+  fireEvent.change(
+    await screen.findByRole("textbox", { name: "Edit app.js" }),
+    { target: { value: "session tool draft" } },
+  );
+  await user.click(screen.getByRole("button", { name: "Close dialog" }));
+  expect(screen.queryByRole("textbox", { name: "Edit app.js" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "app.js", exact: true }));
+  expect(
+    (await screen.findByRole("textbox", { name: "Edit app.js" })).value,
+  ).toBe("session tool draft");
+  first.unmount();
+  render(<RunDetail {...props} />);
+  await user.click(
+    await screen.findByRole("button", { name: "app.js", exact: true }),
+  );
+  expect(
+    (await screen.findByRole("textbox", { name: "Edit app.js" })).value,
+  ).toBe("session tool draft");
+});
+
+test("drafts stay separate across files, projects and working folders", async () => {
+  mockCodeFiles();
+  const runs = [
+    {
+      id: "worktree",
+      projectId: codeProject.id,
+      title: "Task",
+      worktree: "/worktree",
+    },
+  ];
+  const view = render(
+    <ProjectCodeExplorer project={codeProject} runs={runs} />,
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Open app.js" }));
+  fireEvent.change(
+    await screen.findByRole("textbox", { name: "Edit app.js" }),
+    { target: { value: "main draft" } },
+  );
+  fireEvent.change(
+    screen.getByRole("combobox", { name: "Code working folder" }),
+    { target: { value: "worktree" } },
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Open app.js" }));
+  const worktree = await screen.findByRole("textbox", { name: "Edit app.js" });
+  expect(worktree.value).toBe("original app.js");
+  fireEvent.change(worktree, { target: { value: "worktree draft" } });
+  fireEvent.change(
+    screen.getByRole("combobox", { name: "Code working folder" }),
+    { target: { value: "" } },
+  );
+  expect(
+    (await screen.findByRole("textbox", { name: "Edit app.js" })).value,
+  ).toBe("main draft");
+  view.unmount();
+  const other = render(
+    <CodeExplorer
+      project={{ ...codeProject, id: "another-project" }}
+      initialFile="app.js"
+    />,
+  );
+  expect(
+    (await screen.findByRole("textbox", { name: "Edit app.js" })).value,
+  ).toBe("original app.js");
+  other.unmount();
+  render(<ProjectCodeExplorer project={codeProject} runs={runs} />);
+  expect(
+    (await screen.findByRole("textbox", { name: "Edit app.js" })).value,
+  ).toBe("main draft");
+  fireEvent.change(
+    screen.getByRole("combobox", { name: "Code working folder" }),
+    { target: { value: "worktree" } },
+  );
+  expect(
+    (await screen.findByRole("textbox", { name: "Edit app.js" })).value,
+  ).toBe("worktree draft");
+});
+
+test("drafts survive editor unmount when session storage is unavailable", async () => {
+  mockCodeFiles();
+  const original = Storage.prototype.setItem;
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(
+    function (key, value) {
+      if (this === sessionStorage)
+        throw new DOMException("Storage full", "QuotaExceededError");
+      return original.call(this, key, value);
+    },
+  );
+  const project = { ...codeProject, id: "storage-unavailable" };
+  const first = render(<CodeExplorer project={project} initialFile="app.js" />);
+  fireEvent.change(
+    await screen.findByRole("textbox", { name: "Edit app.js" }),
+    { target: { value: "memory draft" } },
+  );
+  first.unmount();
+  render(<CodeExplorer project={project} initialFile="app.js" />);
+  expect(
+    (await screen.findByRole("textbox", { name: "Edit app.js" })).value,
+  ).toBe("memory draft");
+});
+
+test("the top project bar preserves code drafts through Code, Brain, Home and project navigation", async () => {
   const user = userEvent.setup();
   const project = { id: "code-project", name: "Code project", path: "/code" };
   vi.stubGlobal(
@@ -2351,9 +2730,11 @@ test("the top project bar opens and closes the code explorer beside Brain", asyn
       json: async () =>
         url === "/api/state"
           ? { ...emptyState, projects: [project] }
-          : url.endsWith("/files")
-            ? { files: ["index.js"] }
-            : {},
+          : url.includes("?path=")
+            ? { content: "original", version: "v1" }
+            : url.endsWith("/files")
+              ? { files: ["index.js"] }
+              : { notes: [] },
     })),
   );
   render(<App />);
@@ -2374,8 +2755,37 @@ test("the top project bar opens and closes the code explorer beside Brain", asyn
     await screen.findByRole("region", { name: "Code explorer" }),
   ).toBeTruthy();
   expect(code.getAttribute("aria-pressed")).toBe("true");
+  await user.click(
+    await screen.findByRole("button", { name: "Open index.js" }),
+  );
+  fireEvent.change(
+    await screen.findByRole("textbox", { name: "Edit index.js" }),
+    { target: { value: "navigation draft" } },
+  );
   await user.click(code);
   expect(screen.queryByRole("region", { name: "Code explorer" })).toBeNull();
+  await user.click(code);
+  expect(
+    (await screen.findByRole("textbox", { name: "Edit index.js" })).value,
+  ).toBe("navigation draft");
+  await user.click(brain);
+  expect(screen.queryByRole("region", { name: "Code explorer" })).toBeNull();
+  await user.click(code);
+  expect(
+    (await screen.findByRole("textbox", { name: "Edit index.js" })).value,
+  ).toBe("navigation draft");
+  await user.click(screen.getByRole("button", { name: "Home", exact: true }));
+  await user.click(
+    await screen.findByRole("button", { name: /^Open Code project/ }),
+  );
+  await user.click(
+    screen
+      .getAllByRole("button", { name: "Project code" })
+      .find((button) => button.classList.contains("workspace-shortcut")),
+  );
+  expect(
+    (await screen.findByRole("textbox", { name: "Edit index.js" })).value,
+  ).toBe("navigation draft");
 });
 test("idea-first setup keeps advanced controls collapsed and explicitly queues the first task", async () => {
   const save = vi.fn(),
@@ -2834,8 +3244,19 @@ test("existing projects open into implementation work and expose command output"
   expect(
     screen.queryByRole("heading", { name: "No session selected" }),
   ).toBeNull();
-  await user.click(screen.getByRole("button", { name: "1 command executed" }));
-  await user.click(screen.getByText("node --test", { selector: "code" }));
+  await user.click(
+    screen.getByText("Activity", { selector: "summary strong" }),
+  );
+  expect(screen.getByText("1 command · 0 files")).toBeTruthy();
+  expect(
+    screen.getByText(
+      (_, element) =>
+        element.tagName === "CODE" && element.textContent === "node --test",
+    ),
+  ).toBeTruthy();
+  await user.click(
+    screen.getByText("View output · exit 0", { selector: "summary" }),
+  );
   expect(screen.getByText("4 tests passed")).toBeTruthy();
 });
 test("first launch has usable repository onboarding and no fabricated activity", async () => {
