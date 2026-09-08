@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, RefreshCw } from "lucide-react";
+import { ArrowLeft, ArrowRight, Globe2, RefreshCw, X } from "lucide-react";
 
 export function NativeBrowser({ project, initialURL, onBack, onClosePanel }) {
   const [state, setState] = useState(null),
@@ -163,6 +163,7 @@ export function NativeBrowser({ project, initialURL, onBack, onClosePanel }) {
       aria-label="Project browser"
     >
       <header className="browser-controls">
+        <Globe2 size={14} aria-hidden="true" />
         <strong>Browser</strong>
         <span>
           {!state
@@ -181,7 +182,7 @@ export function NativeBrowser({ project, initialURL, onBack, onClosePanel }) {
             title="Hide browser panel"
             onClick={onClosePanel}
           >
-            ×
+            <X size={15} aria-hidden="true" />
           </button>
         )}
       </header>
@@ -193,31 +194,38 @@ export function NativeBrowser({ project, initialURL, onBack, onClosePanel }) {
             action("start", { projectId: project.id, url, approved: true });
           }}
         >
-          <h3>Open a website</h3>
+          <Globe2 size={28} strokeWidth={1.5} aria-hidden="true" />
+          <h3>Browse alongside your chat</h3>
           <p>
-            The page renders directly inside Fleet at your screen’s resolution.
-            Each browser uses a temporary session with in-memory caching.
+            Open a site or local preview. You and your project’s agents share
+            the same page.
           </p>
           <label>
             Website or local preview
             <input
               required
               aria-label="Browser URL"
+              placeholder="https://… or http://localhost:3000"
+              autoComplete="url"
+              spellCheck={false}
               value={url}
               onChange={(e) => setUrl(e.target.value)}
             />
           </label>
-          <small>
-            You and this project’s coding agents share this page automatically.
-            Ask a chat to open a website and it opens this panel for you. No
-            control switching or browser-action approval prompts. Permissions,
-            downloads and pop-up windows are disabled. Closing the browser or
-            opening another project’s browser clears its session. Switching chat
-            tools keeps this same browser open.
-          </small>
-          <button type="submit" disabled={busy}>
+          <button className="browser-open" type="submit" disabled={busy}>
             {busy ? "Opening…" : "Open browser"}
+            <ArrowRight size={15} aria-hidden="true" />
           </button>
+          <small>Or ask your agent to open a website in chat.</small>
+          <details className="browser-session-details">
+            <summary>About this temporary session</summary>
+            <p>
+              Hiding this panel keeps your page open. Closing the browser or
+              opening another project’s browser clears its cookies, cache and
+              unsaved page state. Downloads, pop-ups and site permission
+              requests are disabled.
+            </p>
+          </details>
         </form>
       ) : (
         <>

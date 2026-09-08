@@ -360,6 +360,77 @@ async function runNative() {
         false,
         "closing must return to native setup, not a streamed fallback",
       );
+      if (process.argv.includes("--full-app")) {
+        // Exercise both shared layouts, including the Windows title-bar inset,
+        // without touching the user's running Fleet app or personal profile.
+        for (const platform of ["mac", "windows"]) {
+          await window.webContents.executeJavaScript(
+            `document.documentElement.classList.toggle('windows-desktop', ${platform === "windows"})`,
+          );
+          for (const [width, height] of [
+            [1600, 1000],
+            [2048, 1100],
+            [1000, 760],
+          ]) {
+            window.setContentSize(width, height);
+            await waitFor(() =>
+              window.webContents.executeJavaScript(`
+              innerWidth === ${width} && innerHeight === ${height}
+            `),
+            );
+            // Wait for style/layout and paint before measuring and capturing.
+            await window.webContents.executeJavaScript(
+              "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+            );
+            const layout = await window.webContents.executeJavaScript(`(() => {
+              const rect = s => { const r = document.querySelector(s).getBoundingClientRect(); return {left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width}; };
+              return {chat:rect('.conversation-pane'), pane:rect('.tool-pane'), form:rect('.browser-start'), button:rect('.browser-open'), buttonBackground:getComputedStyle(document.querySelector('.browser-open')).backgroundColor, headers:document.querySelectorAll('.tool-pane header').length, overflow:document.documentElement.scrollWidth > innerWidth};
+            })()`);
+            assert.equal(layout.headers, 1, "only one browser header");
+            assert.equal(layout.overflow, false, "no horizontal page overflow");
+            assert.ok(
+              layout.form.width <= (width > 1100 ? 440 : 600),
+              "compact start form on large screens",
+            );
+            assert.equal(
+              layout.buttonBackground,
+              "rgb(197, 164, 126)",
+              "primary action has a visible filled background",
+            );
+            assert.ok(
+              layout.button.bottom <= height,
+              "primary action remains visible",
+            );
+            assert.ok(
+              layout.form.left >= layout.pane.left &&
+                layout.form.right <= layout.pane.right,
+              "form fits the browser pane",
+            );
+            if (width > 1100) {
+              assert.ok(
+                layout.chat.width >= 360 && layout.chat.width <= 560,
+                "readable chat column",
+              );
+              assert.ok(
+                Math.abs(layout.chat.right - layout.pane.left) <= 1,
+                "panes meet without a gutter",
+              );
+            } else {
+              assert.ok(
+                Math.abs(layout.chat.bottom - layout.pane.top) <= 1,
+                "small windows stack the panes",
+              );
+            }
+            await writeFile(
+              join(directory, `browser-start-${platform}-${width}.png`),
+              (await window.webContents.capturePage()).toPNG(),
+            );
+          }
+        }
+        console.log(
+          "PASS: browser start layout at wide, large and stacked sizes, including Windows title-bar CSS.",
+        );
+      }
       console.log(
         "PASS: real Fleet preload + React UI opens a visible native child, tracks resize, hides for close confirmation and destroys only its own session.",
       );
