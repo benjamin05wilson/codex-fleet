@@ -58,6 +58,25 @@ const props = {
   initialURL: "https://example.com",
 };
 
+test("browser start keeps the main action clear and session details collapsed", () => {
+  const view = render(<NativeBrowser {...props} />);
+  expect(
+    screen.getByRole("heading", { name: "Browse alongside your chat" }),
+  ).toBeTruthy();
+  expect(
+    screen.getByRole("button", { name: "Open browser" }).className,
+  ).toContain("browser-open");
+  expect(
+    screen.getByPlaceholderText("https://… or http://localhost:3000"),
+  ).toBeTruthy();
+  const details = view.container.querySelector("details");
+  expect(details.open).toBe(false);
+  expect(details.textContent).toContain(
+    "Hiding this panel keeps your page open",
+  );
+  expect(invoke.mock.calls.map(([input]) => input.action)).toEqual(["restore"]);
+});
+
 test("opening advertises automatic shared access without a connect or takeover step", async () => {
   render(<NativeBrowser {...props} onBack={() => {}} />);
   expect(screen.getByText(/You \+ project agents/)).toBeTruthy();
