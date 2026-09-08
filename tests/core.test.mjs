@@ -426,7 +426,13 @@ test("local HTTP API rejects foreign origins, forged hosts and mutation without 
   const brain = await (
     await fetch(base + `/api/projects/${project.id}/brain`)
   ).json();
-  assert.equal(brain.notes.length, 4);
+  for (const filename of [
+    "Home.md",
+    "Repository map.md",
+    "Development.md",
+    "Decisions.md",
+  ])
+    assert.ok(brain.notes.some((n) => n.filename === filename));
   await writeFile(join(w.source, "new-source.txt"), "new committed source");
   await git(w.source, ["add", "-A"]);
   await git(w.source, [

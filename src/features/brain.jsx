@@ -68,7 +68,14 @@ import {
   Dialog,
   Field,
 } from "../ui.jsx";
-function BrainView({ project, act, state, notify, requestedNote }) {
+function BrainView({
+  project,
+  act,
+  state,
+  notify,
+  requestedNote,
+  selectedRunId,
+}) {
   const [data, setData] = useState(null);
   const [mode, setMode] = useState("graph");
   const [readerOpen, setReaderOpen] = useState(false);
@@ -89,6 +96,8 @@ function BrainView({ project, act, state, notify, requestedNote }) {
   const [newNote, setNewNote] = useState(false);
   const [noteTitle, setNoteTitle] = useState("");
   const [query, setQuery] = useState("");
+  const [scopeView, setScopeView] = useState("project");
+  const [worktreeScope, setWorktreeScope] = useState("");
   useEffect(() => {
     selectedFile.current?.scrollIntoView?.({ block: "nearest" });
   }, [selected, explorerOpen, fileQuery]);
@@ -126,9 +135,33 @@ function BrainView({ project, act, state, notify, requestedNote }) {
       .map((r) => r.status)
       .join(","),
   ]);
-  const note = data?.notes.find((n) => n.filename === selected);
+  const selectedRun = state.runs.find((r) => r.id === selectedRunId);
+  const worktreeScopes = (data?.scopes || []).filter(
+    (s) => s.scope !== "project",
+  );
+  const currentScope =
+    worktreeScope ||
+    selectedRun?.brainScope ||
+    worktreeScopes.find(
+      (s) => s.root === (selectedRun?.worktree || project.path),
+    )?.scope ||
+    worktreeScopes[0]?.scope;
+  const overlayTopics = new Set(
+    (data?.notes || [])
+      .filter((n) => n.scope === currentScope)
+      .map((n) => n.topic)
+      .filter(Boolean),
+  );
+  const scopedNotes = (data?.notes || []).filter(
+    (n) =>
+      scopeView === "all" ||
+      ((n.scope || "project") === "project" &&
+        !(scopeView === "current" && overlayTopics.has(n.topic))) ||
+      (scopeView === "current" && n.scope === currentScope),
+  );
+  const note = scopedNotes.find((n) => n.filename === selected);
   const links =
-    data?.notes.filter(
+    scopedNotes.filter(
       (n) =>
         n.filename !== selected &&
         (n.links || []).some(
@@ -259,21 +292,92 @@ function BrainView({ project, act, state, notify, requestedNote }) {
               if (result) setData(result);
             }}
           >
-            Refresh inventory
+            Refresh brain
           </Button>
         </div>
       </header>
+      <div className="brain-scope-bar">
+        <div
+          className="brain-view-switch"
+          role="group"
+          aria-label="Knowledge scope"
+        >
+          {[
+            ["project", "Project"],
+            ["current", "Current worktree"],
+            ["all", "All worktrees"],
+          ].map(([value, label]) => (
+            <button
+              key={value}
+              aria-pressed={scopeView === value}
+              onClick={() => {
+                if (editing) {
+                  notify(
+                    "Save or cancel your note edits before switching scope.",
+                  );
+                  return;
+                }
+                setScopeView(value);
+                setSelected("Home.md");
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {scopeView === "current" && (
+          <select
+            aria-label="Brain worktree"
+            value={currentScope || ""}
+            onChange={(e) => {
+              if (editing) {
+                notify(
+                  "Save or cancel your note edits before switching scope.",
+                );
+                return;
+              }
+              setWorktreeScope(e.target.value);
+              setSelected("Home.md");
+            }}
+          >
+            {!worktreeScopes.length && (
+              <option value="">Waiting for worktree index</option>
+            )}
+            {worktreeScopes.map((s) => (
+              <option key={s.scope} value={s.scope}>
+                {s.label} · {s.root.split(/[\\/]/).pop()}
+              </option>
+            ))}
+          </select>
+        )}
+        <span className="muted-copy">
+          {scopeView === "project"
+            ? "Committed knowledge"
+            : "Amber nodes are working-copy knowledge, not merged facts"}
+        </span>
+      </div>
       <div className="brain-auto-status">
         <span className="brain-auto-dot" />
-        Automatic writing
+        <span role="status">
+          {data.indexing?.status === "running"
+            ? "Reading code and updating links…"
+            : data.indexing?.status === "queued"
+              ? "Brain update queued"
+              : data.indexing?.status === "failed"
+                ? `Indexing needs attention: ${data.indexing.error}`
+                : "Automatic writing"}
+        </span>
         <details>
           <summary>What gets written?</summary>
           <div>
-            Committed repository changes are checked every 20 seconds. Finished
-            sessions write receipts with their objective, changed files and
-            outcome. Your notes are preserved. AI memory proposals need approval
-            before becoming trusted context. This view checks for new notes
-            every 8 seconds; no model calls are made by opening the graph.
+            Code, documentation, imports and tests are indexed in the
+            background. Working folders and Git worktrees are checked every 20
+            seconds. Each completed turn records its own before/after changes.
+            Pending worktree knowledge stays separate until code reaches the
+            project's tracked branch. Your notes are preserved. Static
+            relationships are observations, not verified runtime behaviour. No
+            model calls or project commands are made by indexing or opening the
+            graph.
           </div>
         </details>
         <button
@@ -323,7 +427,7 @@ function BrainView({ project, act, state, notify, requestedNote }) {
               />
             </div>
             <div className="note-list">
-              {data.notes
+              {scopedNotes
                 .filter((n) =>
                   `${n.title} ${n.filename}`
                     .toLowerCase()
@@ -366,13 +470,13 @@ function BrainView({ project, act, state, notify, requestedNote }) {
                     ) : null}
                   </button>
                 ))}
-              {!data.notes.some((n) =>
+              {!scopedNotes.some((n) =>
                 `${n.title} ${n.filename}`
                   .toLowerCase()
                   .includes(fileQuery.toLowerCase()),
               ) && (
                 <p className="brain-files-empty">
-                  {data.notes.length ? "No matching notes." : "No notes yet."}
+                  {scopedNotes.length ? "No matching notes." : "No notes yet."}
                 </p>
               )}
             </div>
@@ -381,13 +485,13 @@ function BrainView({ project, act, state, notify, requestedNote }) {
                 <Folder size={13} />
                 {project.name}
               </span>
-              <span>{data.notes.length} notes</span>
+              <span>{scopedNotes.length} notes</span>
             </div>
           </aside>
         )}
         {mode === "graph" && (
           <BrainGraph
-            notes={data.notes}
+            notes={scopedNotes}
             selected={selected}
             onSelect={(filename) => {
               if (choose(filename)) setReaderOpen(true);
@@ -529,6 +633,14 @@ function BrainView({ project, act, state, notify, requestedNote }) {
                   <Clock3 size={15} />
                   Source revision changed. Refresh the inventory before relying
                   on generated facts.
+                </div>
+              )}
+              {note.pending && (
+                <div className="notice amber">
+                  Working-copy knowledge · not a merged project fact. Source:{" "}
+                  {data.scopes?.find((s) => s.scope === note.scope)?.label ||
+                    "archived worktree"}
+                  .
                 </div>
               )}
               {editing ? (

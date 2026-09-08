@@ -65,6 +65,30 @@
   color: var(--ink);
   background: #34343c;
 }
+.brain-scope-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border, #303238);
+}
+.brain-scope-bar select {
+  max-width: min(360px, 100%);
+  background: #252529;
+  color: #b9bcc4;
+  border: 1px solid #3b3d43;
+  border-radius: 4px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  color-scheme: dark;
+}
+.brain-graph .graph-node.pending .graph-core {
+  fill: #c6a071;
+  stroke: #c6a071;
+  stroke-dasharray: 2 2;
+}
 .brain-auto-status {
   display: flex;
   align-items: center;

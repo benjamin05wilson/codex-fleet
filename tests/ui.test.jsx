@@ -703,6 +703,80 @@ test("brain prevents duplicate note creation from overwriting existing content",
     ),
   ).toBe(true);
 });
+test("brain separates project and worktree graph knowledge and labels pending notes", async () => {
+  const user = userEvent.setup();
+  const notes = [
+    brainNotes[0],
+    {
+      filename: "Code A.md",
+      title: "A pending",
+      scope: "worktree-a",
+      pending: true,
+      generated: true,
+      content: "# A",
+      links: ["Home"],
+    },
+    {
+      filename: "Code B.md",
+      title: "B pending",
+      scope: "worktree-b",
+      pending: true,
+      generated: true,
+      content: "# B",
+      links: ["Home"],
+    },
+  ];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        notes,
+        vaultPath: "/vault",
+        indexing: { status: "complete" },
+        scopes: [
+          { scope: "worktree-a", label: "feature-a", root: "/a" },
+          { scope: "worktree-b", label: "feature-b", root: "/b" },
+        ],
+      }),
+    })),
+  );
+  render(
+    <BrainView
+      project={{ id: "p", name: "Project" }}
+      state={{
+        ...emptyState,
+        projects: [{ id: "p" }],
+        runs: [{ id: "chat", brainScope: "worktree-a" }],
+      }}
+      selectedRunId="chat"
+      act={vi.fn()}
+      notify={vi.fn()}
+    />,
+  );
+  await screen.findByRole("group", { name: "Knowledge scope" });
+  expect(
+    screen.queryByRole("button", { name: "Open note: A pending" }),
+  ).toBeNull();
+  await user.click(
+    screen.getByRole("button", { name: "Current worktree", exact: true }),
+  );
+  expect(
+    screen
+      .getByRole("button", { name: "Open note: A pending" })
+      .classList.contains("pending"),
+  ).toBe(true);
+  expect(
+    screen.queryByRole("button", { name: "Open note: B pending" }),
+  ).toBeNull();
+  await user.click(
+    screen.getByRole("button", { name: "All worktrees", exact: true }),
+  );
+  expect(
+    screen.getByRole("button", { name: "Open note: B pending" }),
+  ).toBeTruthy();
+});
+
 test("brain automatically reloads new vault notes without starting an agent", async () => {
   vi.useFakeTimers();
   let notes = brainNotes;

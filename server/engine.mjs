@@ -415,10 +415,20 @@ export class Engine {
     const currentStatus = this.store.get("run", key).status;
     this.watchWorktree(run);
     if (this.closing || currentStatus !== "preparing") return;
+    await this.brain.beforeTurn(project, run).catch((error) =>
+      this.store.event(project.id, run.id, "brain.snapshot.error", {
+        message: redact(error.message),
+      }),
+    );
+    if (this.closing || this.store.get("run", key).status !== "preparing")
+      return;
     const contextSelection = await this.brain.selectContext(
       project,
       run.followup || run.prompt,
-      run.contextOptions,
+      {
+        ...run.contextOptions,
+        scope: this.store.get("run", key).brainScope || "project",
+      },
     );
     const context = contextSelection.text;
     this.store.patch("run", key, { contextSelection });
@@ -765,8 +775,17 @@ export class Engine {
     const blocked =
       run.workflowId &&
       this.store.get("workflow", run.workflowId).status === "needs-attention";
-    const finalStatus =
+    let finalStatus =
       state.stopStatus || (blocked && status === "review" ? "paused" : status);
+    // Snapshot this turn before exposing an idle session: a follow-up must not
+    // start writing into the previous turn's end snapshot.
+    await this.brain.receipt(this.store.get("project", run.projectId), {
+      ...this.store.get("run", key),
+      ...completion,
+      status: finalStatus,
+    });
+    if (state.durable && !ownsWorker(this, key, state)) return;
+    finalStatus = state.stopStatus || finalStatus;
     if (keepAlive && finalStatus === "review") {
       state.idle = true;
       state.awaitingResume = false;
@@ -789,7 +808,6 @@ export class Engine {
       this.releaseIdleWorker(key);
     }
     this.store.event(run.projectId, key, `run.${status}`, { exitCode: code });
-    await this.brain.receipt(this.store.get("project", run.projectId), latest);
     this.tick().catch(() => {});
   }
   releaseIdleWorker(key) {

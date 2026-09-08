@@ -129,6 +129,7 @@ export async function createApp({
           });
           if (current.head !== project.brainHead)
             await brain.refresh({ ...project, ...current });
+          brain.enqueue(project, "external changes");
         } catch (e) {
           store.patch("project", project.id, {
             inventoryError: redact(e.message),
@@ -830,7 +831,10 @@ export async function createApp({
                 (await brain.selectContext(
                   project,
                   url.searchParams.get("q") || run?.prompt || "",
-                  run?.contextOptions || {},
+                  {
+                    ...run?.contextOptions,
+                    scope: run?.brainScope || "project",
+                  },
                 )),
             );
             return;
@@ -872,6 +876,8 @@ export async function createApp({
             send({
               notes: await brain.list(project),
               vaultPath: brain.path(project),
+              indexing: brain.status(project),
+              scopes: brain.scopes(project),
             });
             return;
           }
@@ -879,6 +885,8 @@ export async function createApp({
             send({
               notes: await brain.refresh(project),
               vaultPath: brain.path(project),
+              indexing: brain.status(project),
+              scopes: brain.scopes(project),
             });
             return;
           }
@@ -889,7 +897,10 @@ export async function createApp({
               ["Home.md", "Repository map.md", "Development.md"].includes(
                 filename,
               ) ||
-              filename.startsWith("Session ")
+              filename.startsWith("Session ") ||
+              filename.startsWith("Turn ") ||
+              filename.startsWith("Code ") ||
+              brain.isManaged(project, filename)
             )
               throw new Error(
                 "Generated notes are managed by Fleet. Create a separate decision note.",
@@ -1121,6 +1132,7 @@ export async function createApp({
   });
   browsers.base = () =>
     server.address() ? `http://127.0.0.1:${server.address().port}` : "";
+  brain.start();
   return {
     server,
     store,
@@ -1144,6 +1156,7 @@ export async function createApp({
       await terminals.close();
       for (const stream of streams) stream.end();
       await engine.shutdown({ preserveWorkers });
+      await brain.close();
       // File edits can leave an in-flight security scan after its watcher stops.
       // Drain it while SQLite is still available.
       await Promise.allSettled([...engine.scans]);

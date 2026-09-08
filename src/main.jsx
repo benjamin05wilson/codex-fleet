@@ -896,6 +896,7 @@ function App() {
                     <BrainView
                       key={projectId}
                       requestedNote={requestedNote}
+                      selectedRunId={selected}
                       project={project}
                       act={act}
                       state={state}

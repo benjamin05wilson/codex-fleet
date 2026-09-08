@@ -163,7 +163,7 @@ export function initialNoteGraph(points, width = 1000, height = 700) {
 
 const labels = {
   human: "Your notes",
-  generated: "Inventory",
+  generated: "Code knowledge",
   session: "Sessions",
   proposal: "Proposals",
 };
@@ -557,7 +557,7 @@ export function BrainGraph({ notes, selected, onSelect, query, onQuery }) {
               <g
                 key={n.id}
                 data-note={n.id}
-                className={`graph-node ${n.kind} ${selected === n.id ? "selected" : ""} ${n.stale ? "stale" : ""} ${highlighted.has(n.id) ? "connected" : ""}`}
+                className={`graph-node ${n.kind} ${n.pending ? "pending" : ""} ${selected === n.id ? "selected" : ""} ${n.stale ? "stale" : ""} ${highlighted.has(n.id) ? "connected" : ""}`}
                 transform={`translate(${n.x} ${n.y})`}
                 role="button"
                 tabIndex={0}
@@ -579,6 +579,7 @@ export function BrainGraph({ notes, selected, onSelect, query, onQuery }) {
               >
                 <title>
                   {n.title} · {labels[n.kind]}
+                  {n.pending ? " · Unmerged working-copy knowledge" : ""}
                   {n.stale ? " · Older source revision" : ""}
                 </title>
                 <circle className="graph-hit" r={24} />
