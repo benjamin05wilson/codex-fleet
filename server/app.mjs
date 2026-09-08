@@ -318,12 +318,25 @@ export async function createApp({
           return;
         }
         if (path === "/api/browser-agent" && req.method === "POST") {
-          send(
-            await browsers.agent(
+          const controller = new AbortController();
+          const abort = () => controller.abort();
+          req.once("aborted", abort);
+          res.once("close", abort);
+          try {
+            const input = await body(req);
+            if (req.aborted || res.destroyed) controller.abort();
+            const result = await browsers.agent(
               String(req.headers.authorization || "").replace(/^Bearer /, ""),
-              await body(req),
-            ),
-          );
+              input,
+              controller.signal,
+            );
+            if (!res.destroyed) send(result);
+          } catch (error) {
+            if (!res.destroyed) throw error;
+          } finally {
+            req.off("aborted", abort);
+            res.off("close", abort);
+          }
           return;
         }
         if (req.method === "GET" && path === "/api/search") {
@@ -1104,15 +1117,16 @@ export async function createApp({
     refreshInventories,
     close: async ({ preserveWorkers = false } = {}) => {
       closing = true;
+      engine.closing = true;
       auth.close();
       clearInterval(inventoryTimer);
       workflows.close();
       await teams.close();
       await previews.close();
       await browsers.close();
-      terminals.close();
+      await terminals.close();
       for (const stream of streams) stream.end();
-      engine.shutdown({ preserveWorkers });
+      await engine.shutdown({ preserveWorkers });
       // File edits can leave an in-flight security scan after its watcher stops.
       // Drain it while SQLite is still available.
       await Promise.allSettled([...engine.scans]);

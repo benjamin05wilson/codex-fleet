@@ -132,7 +132,7 @@ Choose a main-folder chat or Git worktree from the sidebar, and choose the model
 
 ## Sessions and execution
 
-By default, independent implementations use a Git worktree at committed source HEAD; uncommitted source edits stay in the source repository. Main-folder chats deliberately use the original files. Read-only and workspace-write modes enforce the configured sandbox, with workspace command network access disabled and no unattended permission escalation. Explicitly opted-in YOLO removes that sandbox and approval prompts; it does not grant automatic acceptance or publishing authority.
+By default, independent implementations use a Git worktree based on source HEAD, seeded with eligible current tracked and untracked source files. Source edits and the original Git index remain untouched; credentials, dependency folders and links are excluded from seeding. Main-folder chats deliberately use the original files. Read-only and workspace-write modes enforce the configured sandbox, with workspace command network access disabled and no unattended permission escalation. Explicitly opted-in YOLO removes that sandbox and approval prompts; it does not grant automatic acceptance or publishing authority.
 
 The daemon launches detached execution owners using the documented [Codex app-server protocol](https://learn.chatgpt.com/docs/app-server). Each worker has a unique attempt identity, explicit permission configuration and append-only redacted event journal. Reconnection ingests events transactionally with a cursor, avoiding duplicate turns and usage counting.
 

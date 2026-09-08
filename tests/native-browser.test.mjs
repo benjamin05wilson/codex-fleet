@@ -146,6 +146,8 @@ test("agent opener creates and reuses the native view without loading a URL twic
   assert.equal(restored.id, first.id);
   const second = await f.manager.openForAgent(input);
   assert.equal(second.id, first.id);
+  const revealed = await f.manager.openForAgent({ projectId: "project" });
+  assert.equal(revealed.id, first.id);
   assert.equal(f.views.length, 1);
   await assert.rejects(
     f.manager.openForAgent({ ...input, url: "http://127.0.0.1:4317" }),

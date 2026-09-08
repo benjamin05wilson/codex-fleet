@@ -52,6 +52,35 @@ const codeExtensions = new Set([
 
 const extension = (path) => path.split(".").pop()?.toLowerCase() || "";
 const isCode = (path) => codeExtensions.has(extension(path));
+
+// Keep drafts outside the editor's lifetime, including session-file dialogs.
+// Session storage also survives a reload; memory is a fallback if it is full.
+const draftFallback = new Map();
+const pendingSaves = new Map();
+const draftEvent = "fleet:code-draft";
+function readDraft(key) {
+  try {
+    const draft = JSON.parse(
+      draftFallback.get(key) || sessionStorage.getItem(key) || "null",
+    );
+    return typeof draft?.content === "string" &&
+      typeof draft?.savedContent === "string"
+      ? draft
+      : null;
+  } catch {
+    return null;
+  }
+}
+function writeDraft(key, draft) {
+  const value = JSON.stringify(draft);
+  try {
+    sessionStorage.setItem(key, value);
+    draftFallback.delete(key);
+  } catch {
+    draftFallback.set(key, value);
+  }
+  window.dispatchEvent(new CustomEvent(draftEvent, { detail: { key, draft } }));
+}
 const sortNodes = (nodes) =>
   nodes
     .sort(
@@ -154,7 +183,16 @@ function TreeNode({ node, depth, expanded, selected, onToggle, onSelect }) {
   );
 }
 
-export function CodeExplorer({
+export function CodeExplorer(props) {
+  return (
+    <CodeEditor
+      key={JSON.stringify([props.project.id, props.project.path, props.runId])}
+      {...props}
+    />
+  );
+}
+
+function CodeEditor({
   project,
   runId,
   initialFile,
@@ -163,21 +201,24 @@ export function CodeExplorer({
 }) {
   const storageKey = `fleet.code-file.${runId || project.id}`;
   const endpoint = `/projects/${project.id}/files${runId ? `?runId=${encodeURIComponent(runId)}` : ""}`;
+  const draftKey = (path) =>
+    `fleet.code-draft.${JSON.stringify([project.id, project.path, runId || "", path])}`;
   const editorRef = useRef(null);
   const locationApplied = useRef(false);
   const [files, setFiles] = useState(null);
   const [selected, setSelected] = useState(
     () => initialFile || localStorage.getItem(storageKey) || "",
   );
+  const documentKey = draftKey(selected);
   const [expanded, setExpanded] = useState(new Set());
   const [query, setQuery] = useState("");
   const [content, setContent] = useState(null);
   const [savedContent, setSavedContent] = useState(null);
-  const [version, setVersion] = useState(null);
   const [listError, setListError] = useState("");
   const [contentError, setContentError] = useState("");
   const [refresh, setRefresh] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [createKind, setCreateKind] = useState("");
   const [newPath, setNewPath] = useState("");
   const dirty =
@@ -218,10 +259,14 @@ export function CodeExplorer({
         if (!alive) return;
         setFiles(result);
         setSelected((current) => {
+          const draft = readDraft(draftKey(current));
           if (
             !current ||
             current === initialFile ||
-            result.files.includes(current)
+            result.files.includes(current) ||
+            draft?.content !== draft?.savedContent ||
+            draft?.error ||
+            pendingSaves.has(draftKey(current))
           )
             return current;
           localStorage.removeItem(storageKey);
@@ -238,10 +283,24 @@ export function CodeExplorer({
 
   useEffect(() => {
     let alive = true;
+    let receivedDraft = false;
+    const applyDraft = (draft) => {
+      setContent(draft.content);
+      setSavedContent(draft.savedContent);
+      setContentError(draft.error || "");
+      setSaving(pendingSaves.has(documentKey));
+    };
+    const changed = (event) => {
+      if (event.detail.key === documentKey) {
+        receivedDraft = true;
+        applyDraft(event.detail.draft);
+      }
+    };
+    window.addEventListener(draftEvent, changed);
     setContent(null);
     setSavedContent(null);
-    setVersion(null);
     setContentError("");
+    setSaving(pendingSaves.has(documentKey));
     if (selected) {
       localStorage.setItem(storageKey, selected);
       setExpanded((current) => {
@@ -252,22 +311,50 @@ export function CodeExplorer({
           .forEach((_, index) => next.add(parts.slice(0, index + 1).join("/")));
         return next;
       });
-      api(`${endpoint}${runId ? "&" : "?"}path=${encodeURIComponent(selected)}`)
-        .then((result) => {
-          if (alive) {
-            setContent(result.content);
-            setSavedContent(result.content);
-            setVersion(result.version);
-          }
-        })
-        .catch((error) => {
-          if (alive) setContentError(error.message);
-        });
+      const draft = readDraft(documentKey);
+      if (
+        draft &&
+        (draft.content !== draft.savedContent ||
+          draft.error ||
+          pendingSaves.has(documentKey))
+      ) {
+        applyDraft(draft);
+      } else
+        api(
+          `${endpoint}${runId ? "&" : "?"}path=${encodeURIComponent(selected)}`,
+        )
+          .then((result) => {
+            if (!alive) return;
+            // Another editor may have loaded, edited or saved this document
+            // since this GET began. Re-read before publishing its old result.
+            const latest = readDraft(documentKey);
+            if (
+              latest &&
+              (receivedDraft ||
+                latest.generation !== draft?.generation ||
+                latest.content !== latest.savedContent ||
+                latest.error ||
+                pendingSaves.has(documentKey))
+            ) {
+              applyDraft(latest);
+            } else {
+              writeDraft(documentKey, {
+                content: result.content,
+                savedContent: result.content,
+                version: result.version,
+                generation: crypto.randomUUID(),
+              });
+            }
+          })
+          .catch((error) => {
+            if (alive && !receivedDraft) setContentError(error.message);
+          });
     }
     return () => {
       alive = false;
+      window.removeEventListener(draftEvent, changed);
     };
-  }, [project.id, refresh, selected, storageKey, endpoint, runId]);
+  }, [project.id, refresh, selected, storageKey, endpoint, runId, documentKey]);
 
   useEffect(() => {
     const warn = (event) => {
@@ -295,25 +382,35 @@ export function CodeExplorer({
       else next.add(path);
       return next;
     });
-  const leaveCurrentFile = () =>
-    !dirty || window.confirm("Discard your unsaved changes?");
   const selectFile = (path) => {
-    if (path !== selected && !leaveCurrentFile()) return;
     setSelected(path);
   };
   const refreshFiles = () => {
-    if (!leaveCurrentFile()) return;
+    if (
+      saving ||
+      creating ||
+      (dirty &&
+        !window.confirm("Discard your unsaved changes and reload this file?"))
+    )
+      return;
+    const draft = readDraft(documentKey);
+    if (draft)
+      writeDraft(documentKey, {
+        ...draft,
+        content: draft.savedContent,
+        error: "",
+      });
     setRefresh((value) => value + 1);
   };
   const beginCreate = (kind) => {
-    if (!leaveCurrentFile()) return;
     setCreateKind(kind);
     setNewPath("");
     setListError("");
   };
   const createEntry = async (event) => {
     event.preventDefault();
-    setSaving(true);
+    if (creating || saving) return;
+    setCreating(true);
     setListError("");
     try {
       const path = newPath.trim().replaceAll("\\", "/");
@@ -332,27 +429,51 @@ export function CodeExplorer({
     } catch (error) {
       setListError(error.message);
     } finally {
-      setSaving(false);
+      setCreating(false);
     }
   };
   const saveFile = async () => {
-    if (!selected || content === null || !dirty || saving) return;
-    setSaving(true);
-    setContentError("");
+    if (
+      !selected ||
+      content === null ||
+      !dirty ||
+      saving ||
+      creating ||
+      pendingSaves.has(documentKey)
+    )
+      return;
+    const submitted = readDraft(documentKey);
+    if (!submitted) return;
+    pendingSaves.set(documentKey, submitted);
+    writeDraft(documentKey, { ...submitted, error: "" });
+    let completed;
     try {
       const result = await api(endpoint, "PUT", {
         path: selected,
         kind: "file",
-        content,
-        baseVersion: version,
+        content: submitted.content,
+        baseVersion: submitted.version,
       });
-      setSavedContent(result.content);
-      setVersion(result.version);
-      setRefresh((value) => value + 1);
+      const latest = readDraft(documentKey);
+      if (latest?.generation === submitted.generation) {
+        completed = {
+          ...latest,
+          content:
+            latest.content === submitted.content
+              ? result.content
+              : latest.content,
+          savedContent: result.content,
+          version: result.version,
+          error: "",
+        };
+      }
     } catch (error) {
-      setContentError(error.message);
+      const latest = readDraft(documentKey);
+      if (latest?.generation === submitted.generation)
+        completed = { ...latest, error: error.message };
     } finally {
-      setSaving(false);
+      pendingSaves.delete(documentKey);
+      if (completed) writeDraft(documentKey, completed);
     }
   };
 
@@ -381,6 +502,7 @@ export function CodeExplorer({
             className="icon-button"
             aria-label="Refresh project files"
             title="Refresh project files"
+            disabled={saving || creating}
             onClick={refreshFiles}
           >
             <RefreshCw size={14} />
@@ -405,9 +527,12 @@ export function CodeExplorer({
               }
               value={newPath}
               onChange={(event) => setNewPath(event.target.value)}
-              disabled={saving}
+              disabled={saving || creating}
             />
-            <button disabled={saving || !newPath.trim()} type="submit">
+            <button
+              disabled={saving || creating || !newPath.trim()}
+              type="submit"
+            >
               Add
             </button>
             <button
@@ -479,7 +604,7 @@ export function CodeExplorer({
               <small>{dirty ? "UNSAVED" : "SAVED"}</small>
               <button
                 className="code-save-button"
-                disabled={!dirty || saving}
+                disabled={!dirty || saving || creating}
                 onClick={saveFile}
               >
                 <Save size={13} />
@@ -487,12 +612,15 @@ export function CodeExplorer({
               </button>
             </header>
             <div className="code-preview-scroll">
-              {contentError ? (
+              {contentError && (
                 <p className="code-preview-status" role="alert">
                   {contentError}
                 </p>
-              ) : content === null ? (
-                <p className="code-preview-status">Loading file…</p>
+              )}
+              {content === null ? (
+                !contentError && (
+                  <p className="code-preview-status">Loading file…</p>
+                )
               ) : (
                 <textarea
                   ref={editorRef}
@@ -500,7 +628,12 @@ export function CodeExplorer({
                   aria-label={`Edit ${selected}`}
                   value={content}
                   spellCheck="false"
-                  onChange={(event) => setContent(event.target.value)}
+                  onChange={(event) =>
+                    writeDraft(documentKey, {
+                      ...readDraft(documentKey),
+                      content: event.target.value,
+                    })
+                  }
                   onKeyDown={(event) => {
                     if ((event.ctrlKey || event.metaKey) && event.key === "s") {
                       event.preventDefault();
@@ -547,7 +680,6 @@ export function ProjectCodeExplorer({ project, runs = [], selectedRunId }) {
       ? selectedRunId
       : "";
   });
-  const [dirty, setDirty] = useState(false);
   const session = sessions.find((run) => run.id === scope);
   const unavailable = Boolean(scope && !session);
   useEffect(() => {
@@ -557,14 +689,6 @@ export function ProjectCodeExplorer({ project, runs = [], selectedRunId }) {
     );
   }, [scope, selectedRunId, storageKey]);
   const changeScope = (event) => {
-    if (
-      dirty &&
-      !window.confirm(
-        "Discard your unsaved changes before switching working folders?",
-      )
-    )
-      return;
-    setDirty(false);
     setScope(event.target.value);
   };
   const folder = session?.worktree || project.path;
@@ -613,7 +737,6 @@ export function ProjectCodeExplorer({ project, runs = [], selectedRunId }) {
           key={scope || project.id}
           project={{ ...project, path: folder }}
           runId={scope || undefined}
-          onDirtyChange={setDirty}
         />
       )}
     </section>

@@ -1,7 +1,7 @@
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { watch } from "node:fs";
+import { watch, realpathSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
   mkdir,
@@ -19,6 +19,8 @@ import {
   attachWorker,
   resumeWorker,
   stopWorker,
+  retireWorker,
+  ownsWorker,
 } from "./durable.mjs";
 import { sandboxCheck } from "./codex-client.mjs";
 import { isAuthenticationError, signInMessage } from "../shared/auth.mjs";
@@ -86,6 +88,8 @@ export class Engine {
     this.transport = transport;
     this.concurrency = concurrency;
     this.processes = new Map();
+    this.workers = new Set();
+    this.finishes = new Set();
     this.validations = new Map();
     this.watchers = new Map();
     this.scanDebounce = new Map();
@@ -262,6 +266,7 @@ export class Engine {
             r.status === "queued" &&
             !this.store.get("project", r.projectId).removedAt,
         )) {
+        if (this.closing) break;
         if (this.processes.get(run.id)?.releasing) continue;
         if (
           [...this.processes.values()].filter((state) => !state.idle).length >=
@@ -422,6 +427,7 @@ export class Engine {
     if (this.transport === "app-server") {
       if (!(await resumeWorker(this, run, prompt)))
         await launchWorker(this, run, prompt);
+      if (this.closing) return;
       this.store.event(project.id, key, "run.started", {
         branch: run.branch,
         sandbox: run.sandbox,
@@ -509,6 +515,7 @@ export class Engine {
     });
   }
   onEvent(key, raw, state) {
+    if (state.durable && !ownsWorker(this, key, state)) return;
     const run = this.store.get("run", key);
     const event = redactValue(raw);
     if (
@@ -639,6 +646,7 @@ export class Engine {
     return { ...change, diff: redact(change.diff) };
   }
   async scanActive() {
+    if (this.closing) return;
     const candidates = new Map(this.processes);
     for (const run of this.store
       .list("run")
@@ -660,10 +668,18 @@ export class Engine {
       }
   }
   watchWorktree(run) {
-    if (run.deletedAt || this.watchers.has(run.id) || !run.worktree) return;
+    if (
+      this.closing ||
+      run.deletedAt ||
+      this.watchers.has(run.id) ||
+      !run.worktree
+    )
+      return;
     try {
       const watcher = watch(
-        run.worktree,
+        // libuv's Windows watcher can abort the entire process for 8.3 aliases
+        // or mixed separators. Resolve the native long path at this boundary.
+        realpathSync.native(run.worktree),
         { recursive: true },
         (_event, filename) => {
           if (
@@ -698,10 +714,24 @@ export class Engine {
       /* Periodic reconciliation remains available when native watching is unavailable. */
     }
   }
-  async finish(key, state, code, { keepAlive = false } = {}) {
+  finish(key, state, code, options = {}) {
+    if (state.finishing) return state.finishing;
+    const pending = this.finishTurn(key, state, code, options);
+    state.finishing = pending;
+    this.finishes.add(pending);
+    const settled = () => {
+      this.finishes.delete(pending);
+      state.finishing = null;
+      if (!options.keepAlive && this.processes.get(key) === state)
+        this.processes.delete(key);
+    };
+    pending.then(settled, settled);
+    return pending;
+  }
+  async finishTurn(key, state, code, { keepAlive = false } = {}) {
+    if (state.durable && !ownsWorker(this, key, state)) return;
     clearTimeout(state.timeout);
     clearTimeout(state.killTimer);
-    if (!keepAlive) this.processes.delete(key);
     const run = this.store.get("run", key);
     if (isAuthenticationError(state.stderr)) {
       this.auth?.invalidate();
@@ -713,23 +743,25 @@ export class Engine {
       (code === 0 && state.sawComplete && !state.sawFailure
         ? "review"
         : "failed");
-    this.store.patch("run", key, {
+    const completion = {
       durationMs: run.durationMs + Date.now() - state.started,
       error: ["failed", "interrupted"].includes(status)
         ? state.stderr ||
           "Codex did not complete a turn. Inspect the event stream."
         : null,
       finishedAt: now(),
-    });
+    };
     await this.scan(key).catch((e) =>
       this.store.event(run.projectId, key, "scan.error", {
         message: e.message,
       }),
     );
+    if (state.durable && !ownsWorker(this, key, state)) return;
     const blocked =
       run.workflowId &&
       this.store.get("workflow", run.workflowId).status === "needs-attention";
-    const finalStatus = blocked && status === "review" ? "paused" : status;
+    const finalStatus =
+      state.stopStatus || (blocked && status === "review" ? "paused" : status);
     if (keepAlive && finalStatus === "review") {
       state.idle = true;
       state.awaitingResume = false;
@@ -739,6 +771,9 @@ export class Engine {
       state.sawFailure = false;
     }
     const latest = this.store.patch("run", key, {
+      // Commit accounting together with the final status, after the scan and
+      // ownership check. A detached poller leaves no partial duration to replay.
+      ...completion,
       status: finalStatus,
       ...(keepAlive && finalStatus === "review"
         ? { worker: { ...run.worker, idle: true, persistent: true } }
@@ -756,12 +791,12 @@ export class Engine {
     const state = this.processes.get(key);
     if (!state?.durable || !state.idle) return false;
     if (state.releasing) return true;
-    state.releasing = true;
     const run = this.store.get("run", key);
-    this.store.patch("run", key, {
-      worker: { ...run.worker, idle: false, persistent: false },
-    });
-    stopWorker(run).catch(() => {});
+    if (ownsWorker(this, key, state))
+      this.store.patch("run", key, {
+        worker: { ...run.worker, idle: false, persistent: false },
+      });
+    retireWorker(state);
     return true;
   }
   stop(key, status = "paused") {
@@ -770,9 +805,16 @@ export class Engine {
     if (state?.durable) {
       state.stopStatus = status;
       this.store.patch("run", key, { status: "pausing" });
-      stopWorker(run).catch((error) =>
-        this.store.patch("run", key, { error: error.message }),
-      );
+      if (state.stopPending) return this.store.get("run", key);
+      state.stopPending = stopWorker({ worker: state.worker })
+        .catch((error) => {
+          if (ownsWorker(this, key, state))
+            this.store.patch("run", key, { error: error.message });
+        })
+        .finally(() => {
+          state.stopPending = null;
+          state.settle();
+        });
       return this.store.get("run", key);
     }
     if (!state) {
@@ -924,7 +966,6 @@ export class Engine {
     child.on("error", (e) => append(e.message));
     child.on("close", async (code) => {
       clearTimeout(timeout);
-      this.validations.delete(key);
       const current = await snapshot(run).catch(() => null);
       const changed = before !== current;
       if (changed)
@@ -951,6 +992,7 @@ export class Engine {
       await this.brain
         .receipt(project, this.store.get("run", key))
         .catch(() => {});
+      this.validations.delete(key);
     });
     child.send({
       ...shellCommand(project.validation),
@@ -1056,6 +1098,32 @@ export class Engine {
   }
   assertIdleWorktree(run, { allowTeamReaders = true } = {}) {
     validatePermissions(run);
+    if (
+      run.sandbox === "danger-full-access" &&
+      (this.terminals?.opening.size || this.previews?.opening.size)
+    )
+      throw new Error(
+        "Wait for the opening shell or preview, then close it before starting YOLO.",
+      );
+    if (
+      this.store
+        .list("run")
+        .some(
+          (other) =>
+            other.id !== run.id &&
+            !other.deletedAt &&
+            (run.sandbox === "danger-full-access" ||
+              other.sandbox === "danger-full-access") &&
+            ([...ACTIVE, "queued"].includes(other.status) ||
+              other.shellOpen ||
+              ["starting", "running", "stopping"].includes(
+                other.preview?.status,
+              )),
+        )
+    )
+      throw new Error(
+        "YOLO runs need exclusive access. Stop other Fleet agents, shells and previews first.",
+      );
     if (run.deletedAt)
       throw new Error("Restore this chat from Trash before using it.");
     if (this.previews?.has(run.worktree))
@@ -1133,6 +1201,7 @@ export class Engine {
     return result;
   }
   shutdown({ preserveWorkers = false } = {}) {
+    if (this.shutdownPending) return this.shutdownPending;
     this.closing = true;
     clearInterval(this.timer);
     clearInterval(this.scanTimer);
@@ -1141,10 +1210,11 @@ export class Engine {
     for (const timer of this.scanDebounce.values()) clearTimeout(timer);
     this.scanDebounce.clear();
     for (const [key, state] of this.processes) {
-      if (state.durable && state.idle) this.releaseIdleWorker(key);
+      if (state.durable && (state.releasing || !ownsWorker(this, key, state)))
+        retireWorker(state);
+      else if (state.durable && state.idle) this.releaseIdleWorker(key);
       else if (state.durable && preserveWorkers) {
-        clearInterval(state.poller);
-        this.processes.delete(key);
+        state.dispose();
       } else this.stop(key, "interrupted");
     }
     for (const child of this.validations.values())
@@ -1152,5 +1222,30 @@ export class Engine {
         if (child.abort) child.abort();
         else stopProcessTree(child, "SIGKILL");
       } catch {}
+    this.shutdownPending = this.drain();
+    return this.shutdownPending;
+  }
+  async drain() {
+    // Launches, pollers and finish/receipt callbacks may enqueue scans while
+    // shutting down. Wait for their full lifetime before draining those scans.
+    while (
+      this.busy ||
+      this.processes.size ||
+      this.workers.size ||
+      this.finishes.size ||
+      this.validations.size ||
+      this.scans.size
+    ) {
+      await Promise.allSettled([
+        ...[...this.workers].map((state) => state.done),
+        ...this.finishes,
+        ...this.scans,
+        ...[...this.validations.values()]
+          .map((state) => state.pending)
+          .filter(Boolean),
+      ]);
+      if (this.busy || this.processes.size || this.validations.size)
+        await new Promise((resolve) => setTimeout(resolve, 20));
+    }
   }
 }

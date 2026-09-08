@@ -221,9 +221,10 @@ async function runNative() {
         },
         execute: async (input) => {
           // Include the isolated daemon in the fixture's forbidden ports too.
-          browserURL(input.url, [
-            Number(new URL(process.env.FLEET_SHARED_TEST_ORIGIN).port),
-          ]);
+          if (input.url !== undefined)
+            browserURL(input.url, [
+              Number(new URL(process.env.FLEET_SHARED_TEST_ORIGIN).port),
+            ]);
           const result = await native.openForAgent(input);
           id = result.id;
           window.webContents.send("fleet:browser-requested", {

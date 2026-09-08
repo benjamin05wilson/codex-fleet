@@ -27,6 +27,9 @@ export function connectNativeAgent({
   };
   const loop = async () => {
     while (!stopped) {
+      const transport = new AbortController();
+      const signal = AbortSignal.any([lifetime.signal, transport.signal]);
+      let execution = Promise.resolve();
       try {
         const response = await fetchImpl(origin + "/api/state", {
           signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(5000)]),
@@ -37,18 +40,32 @@ export function connectNativeAgent({
         if (stopped) break;
         onStatus({ connected: true, error: "" });
         while (!stopped) {
-          const command = await request("next", { token });
+          // Keep the transport alive even when native execution is slow. The
+          // broker holds the next command until this one's result is accepted.
+          const command = await request("next", { token }, signal);
           if (!command || stopped) continue;
-          let result, error;
-          try {
-            result = await execute(command.input);
-          } catch (e) {
-            error = e.message;
-          }
-          if (stopped) break;
-          await request("result", { token, id: command.id, result, error });
+          await execution;
+          if (signal.aborted) break;
+          execution = (async () => {
+            let result, error;
+            try {
+              result = await execute(command.input);
+            } catch (e) {
+              error = e.message;
+            }
+            if (signal.aborted) return;
+            await request(
+              "result",
+              { token, id: command.id, result, error },
+              signal,
+            );
+          })();
+          execution.catch((error) => transport.abort(error));
         }
       } catch (e) {
+        transport.abort();
+        // Never replay or overlap an operation after a transport failure.
+        await execution.catch(() => {});
         if (!stopped) {
           onStatus({ connected: false, error: e.message });
           if (token)
@@ -67,6 +84,9 @@ export function connectNativeAgent({
             if (stopped) done();
           });
         }
+      } finally {
+        transport.abort();
+        await execution.catch(() => {});
       }
     }
   };

@@ -60,6 +60,7 @@ async function setup(t, options = {}) {
       .find((r) => r.kind === "initial" && r.status !== "running"),
   );
   assert.equal(initial.status, "completed", JSON.stringify(initial));
+  await until(() => !app.teams.busy);
   return { app, root, source, project, team, initial };
 }
 test("team requires explicit approval and validates structured findings", async () => {
@@ -255,6 +256,9 @@ test("findings require human acknowledgement; memory proposals remain excluded c
       .list("team-round")
       .some((r) => r.kind === "memory" && r.status === "completed"),
   );
+  // A completed round is published before its asynchronous proposal write
+  // releases the reconciliation lock. Wait before submitting the next task.
+  await until(() => !app.teams.busy);
   const next = await app.teams.task(project.id, {
     title: "Next task",
     prompt: "TEST_EDIT",
