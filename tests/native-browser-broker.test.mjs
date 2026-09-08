@@ -101,6 +101,7 @@ test("commands have no broker deadline and the page survives between chat turns"
   const { broker, connection, runs, desktop } = fixture(t),
     firstConnection = connection("a"),
     pending = broker.agent(firstConnection.token, { action: "snapshot" });
+  runs.get("a").worker.persistent = true;
   const command = await broker.next(
     desktop.token,
     new AbortController().signal,
@@ -115,10 +116,9 @@ test("commands have no broker deadline and the page survives between chat turns"
   await assert.rejects(pending, /expired/);
   assert.equal(broker.state("one").status, "open");
 
+  connection("b");
   runs.get("a").status = "running";
-  runs.get("a").worker.identity = "a2";
-  const nextConnection = broker.connection(runs.get("a"), "a2"),
-    resumed = broker.agent(nextConnection.token, { action: "snapshot" });
+  const resumed = broker.agent(firstConnection.token, { action: "snapshot" });
   const resumedCommand = await broker.next(
     desktop.token,
     new AbortController().signal,

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { openSync, closeSync } from "node:fs";
-import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -10,6 +10,7 @@ export async function launchWorker(engine, run, prompt) {
   const directory = join(engine.dataDir, "workers", run.id, randomUUID());
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const identity = randomUUID();
+  const browser = engine.browsers?.connection(run, identity) || null;
   await writeFile(
     join(directory, "config.json"),
     JSON.stringify({
@@ -18,11 +19,19 @@ export async function launchWorker(engine, run, prompt) {
       run,
       prompt,
       timeoutMs: run.timeoutMs,
-      browser: engine.browsers?.connection(run, identity) || null,
+      browser,
     }),
     { mode: 0o600 },
   );
-  const worker = { directory, identity, cursor: 0, createdAt: Date.now() };
+  const worker = {
+    directory,
+    identity,
+    cursor: 0,
+    createdAt: Date.now(),
+    persistent: true,
+    idle: false,
+    model: run.model || "",
+  };
   engine.store.patch("run", run.id, {
     worker,
     status: "running",
@@ -65,6 +74,8 @@ export function attachWorker(engine, run) {
     sawComplete: false,
     sawFailure: false,
     scanBusy: false,
+    idle: run.status === "review" && run.worker.persistent === true,
+    awaitingResume: false,
   };
   engine.processes.set(run.id, state);
   let busy = false;
@@ -78,6 +89,7 @@ export function attachWorker(engine, run) {
         "utf8",
       ).catch(() => "");
       let exit;
+      let becameIdle = false;
       for (const line of journal.split("\n").slice(0, -1)) {
         const entry = JSON.parse(line);
         // Retain completion state even when replay starts beyond an already ingested event.
@@ -85,6 +97,8 @@ export function attachWorker(engine, run) {
         if (entry.event.type === "turn.failed") state.sawFailure = true;
         if (entry.event.type === "worker.exit") exit = entry.event;
         if (entry.seq <= current.worker.cursor) continue;
+        if (entry.event.type === "worker.idle") becameIdle = true;
+        if (entry.event.type === "turn.started") state.awaitingResume = false;
         engine.store.db.exec("BEGIN IMMEDIATE");
         try {
           engine.onEvent(run.id, entry.event, state);
@@ -104,6 +118,11 @@ export function attachWorker(engine, run) {
       );
       if (exit) {
         clearInterval(state.poller);
+        if (state.releasing) {
+          if (engine.processes.get(run.id) === state)
+            engine.processes.delete(run.id);
+          return;
+        }
         if (exit.interrupted && !state.stopStatus) state.stopStatus = "paused";
         state.stderr = exit.error || state.stderr;
         await engine.finish(run.id, state, exit.exitCode);
@@ -111,6 +130,14 @@ export function attachWorker(engine, run) {
       }
       if (status.identity && status.identity !== run.worker.identity)
         throw new Error("Worker identity mismatch.");
+      if (
+        !state.idle &&
+        !state.awaitingResume &&
+        (becameIdle || status.idle === true)
+      ) {
+        await engine.finish(run.id, state, 0, { keepAlive: true });
+        return;
+      }
       if (Date.now() - (status.time || run.worker.createdAt) > 10000) {
         if (status.pid) {
           try {
@@ -147,6 +174,50 @@ export function attachWorker(engine, run) {
   state.poller = setInterval(poll, 250);
   poll();
   return state;
+}
+export async function resumeWorker(engine, run, prompt) {
+  const state = engine.processes.get(run.id);
+  if (
+    !state?.durable ||
+    !state.idle ||
+    state.releasing ||
+    run.worker?.persistent !== true
+  )
+    return false;
+  const attempt = run.attempt + 1;
+  state.idle = false;
+  state.awaitingResume = true;
+  state.started = Date.now();
+  state.stderr = "";
+  state.sawComplete = false;
+  state.sawFailure = false;
+  const worker = { ...run.worker, idle: false, model: run.model || "" };
+  engine.store.patch("run", run.id, {
+    worker,
+    status: "running",
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    attempt,
+  });
+  const temporary = join(run.worker.directory, `command-${randomUUID()}.tmp`);
+  try {
+    await writeFile(
+      temporary,
+      JSON.stringify({
+        identity: run.worker.identity,
+        attempt,
+        prompt,
+        run: { ...run, worker },
+      }),
+      { mode: 0o600 },
+    );
+    await rename(temporary, join(run.worker.directory, "command.json"));
+    return true;
+  } catch (error) {
+    state.idle = true;
+    state.awaitingResume = false;
+    throw error;
+  }
 }
 export async function stopWorker(run) {
   await writeFile(join(run.worker.directory, "stop"), "stop", { mode: 0o600 });

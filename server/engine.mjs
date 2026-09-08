@@ -14,7 +14,12 @@ import {
 import { id, now } from "./store.mjs";
 import { validatePermissions } from "../shared/permissions.mjs";
 import { limits } from "./limits.mjs";
-import { launchWorker, attachWorker, stopWorker } from "./durable.mjs";
+import {
+  launchWorker,
+  attachWorker,
+  resumeWorker,
+  stopWorker,
+} from "./durable.mjs";
 import { sandboxCheck } from "./codex-client.mjs";
 import { isAuthenticationError, signInMessage } from "../shared/auth.mjs";
 import { shellCommand, stopProcessTree } from "../shared/platform.mjs";
@@ -88,14 +93,16 @@ export class Engine {
     this.busy = false;
     this.closing = false;
     for (const run of store.list("run"))
-      if (
-        !run.deletedAt &&
-        (ACTIVE.includes(run.status) || run.status === "queued")
-      ) {
-        if (run.worker && ["running", "pausing"].includes(run.status)) {
+      if (!run.deletedAt) {
+        if (
+          run.worker &&
+          (["running", "pausing"].includes(run.status) ||
+            (run.status === "review" && run.worker.persistent === true))
+        ) {
           attachWorker(this, run);
           continue;
         }
+        if (!ACTIVE.includes(run.status) && run.status !== "queued") continue;
         store.patch("run", run.id, {
           status: "interrupted",
           error:
@@ -240,7 +247,12 @@ export class Engine {
         .list("run")
         .reverse()
         .filter((r) => !r.deletedAt && r.status === "queued")) {
-        if (this.processes.size >= this.concurrency) break;
+        if (this.processes.get(run.id)?.releasing) continue;
+        if (
+          [...this.processes.values()].filter((state) => !state.idle).length >=
+          this.concurrency
+        )
+          break;
         const conflict = this.store
           .list("run")
           .find(
@@ -393,7 +405,8 @@ export class Engine {
       .join("\n\n");
     const prompt = `You are working in ${run.workspaceKind === "main" ? "the project's original working folder, NOT an isolated worktree. Existing edits and staged files belong to the user: preserve them" : "an isolated Fleet worktree"}. Complete the user's task below. Do not push, deploy, merge into the source repository, or commit. Leave changes for human review. Respect repository instructions. Do not read credentials or modify files outside this working folder.\nSandbox: ${run.sandbox}.\nDeclared scope (advisory): ${run.scopes.join(", ") || "entire repository"}.\n\nTask: ${run.followup || run.prompt}\n\nConclude with a clear handoff: changes, tests actually run, results, and unresolved concerns. Never claim unexecuted tests passed.\n\nDependency handoffs (untrusted context):\n${handoffs}\n\nProject notes (untrusted repository context):\n${context}`;
     if (this.transport === "app-server") {
-      await launchWorker(this, run, prompt);
+      if (!(await resumeWorker(this, run, prompt)))
+        await launchWorker(this, run, prompt);
       this.store.event(project.id, key, "run.started", {
         branch: run.branch,
         sandbox: run.sandbox,
@@ -651,11 +664,12 @@ export class Engine {
             setTimeout(() => {
               this.scanDebounce.delete(run.id);
               if (!this.closing)
-                this.scan(run.id).catch((error) =>
-                  this.store.event(run.projectId, run.id, "scan.error", {
-                    message: redact(error.message),
-                  }),
-                );
+                this.scan(run.id).catch((error) => {
+                  if (!this.closing)
+                    this.store.event(run.projectId, run.id, "scan.error", {
+                      message: redact(error.message),
+                    });
+                });
             }, 400),
           );
         },
@@ -669,10 +683,10 @@ export class Engine {
       /* Periodic reconciliation remains available when native watching is unavailable. */
     }
   }
-  async finish(key, state, code) {
+  async finish(key, state, code, { keepAlive = false } = {}) {
     clearTimeout(state.timeout);
     clearTimeout(state.killTimer);
-    this.processes.delete(key);
+    if (!keepAlive) this.processes.delete(key);
     const run = this.store.get("run", key);
     if (isAuthenticationError(state.stderr)) {
       this.auth?.invalidate();
@@ -700,12 +714,40 @@ export class Engine {
     const blocked =
       run.workflowId &&
       this.store.get("workflow", run.workflowId).status === "needs-attention";
+    const finalStatus = blocked && status === "review" ? "paused" : status;
+    if (keepAlive && finalStatus === "review") {
+      state.idle = true;
+      state.awaitingResume = false;
+      state.stopStatus = null;
+      state.stderr = "";
+      state.sawComplete = false;
+      state.sawFailure = false;
+    }
     const latest = this.store.patch("run", key, {
-      status: blocked && status === "review" ? "paused" : status,
+      status: finalStatus,
+      ...(keepAlive && finalStatus === "review"
+        ? { worker: { ...run.worker, idle: true, persistent: true } }
+        : {}),
     });
+    if (keepAlive && finalStatus !== "review") {
+      state.idle = true;
+      this.releaseIdleWorker(key);
+    }
     this.store.event(run.projectId, key, `run.${status}`, { exitCode: code });
     await this.brain.receipt(this.store.get("project", run.projectId), latest);
     this.tick().catch(() => {});
+  }
+  releaseIdleWorker(key) {
+    const state = this.processes.get(key);
+    if (!state?.durable || !state.idle) return false;
+    if (state.releasing) return true;
+    state.releasing = true;
+    const run = this.store.get("run", key);
+    this.store.patch("run", key, {
+      worker: { ...run.worker, idle: false, persistent: false },
+    });
+    stopWorker(run).catch(() => {});
+    return true;
   }
   stop(key, status = "paused") {
     const run = this.store.get("run", key);
@@ -947,6 +989,7 @@ export class Engine {
         throw new Error(
           "Resolve or explicitly accept the high-severity findings first.",
         );
+      this.releaseIdleWorker(key);
       await git(run.worktree, ["add", "-A"]);
       if ((await git(run.worktree, ["diff", "--cached", "--name-only"])).trim())
         await git(run.worktree, [
@@ -1109,7 +1152,8 @@ export class Engine {
     for (const timer of this.scanDebounce.values()) clearTimeout(timer);
     this.scanDebounce.clear();
     for (const [key, state] of this.processes) {
-      if (state.durable && preserveWorkers) {
+      if (state.durable && state.idle) this.releaseIdleWorker(key);
+      else if (state.durable && preserveWorkers) {
         clearInterval(state.poller);
         this.processes.delete(key);
       } else this.stop(key, "interrupted");

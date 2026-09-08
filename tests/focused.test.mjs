@@ -199,6 +199,69 @@ test("worker survives daemon detach; reconnect does not duplicate a turn or usag
     1,
   );
 });
+test("successful follow-ups reuse the durable Codex and browser connection", async (t) => {
+  const w = await setup(t),
+    engine = w.createEngine();
+  let browserConnections = 0;
+  engine.browsers = {
+    connection: () => {
+      browserConnections++;
+      return {
+        node: process.execPath,
+        script: "fixture-browser.mjs",
+        url: "http://127.0.0.1:1/api/browser-agent",
+        token: "fixture-browser-token",
+      };
+    },
+  };
+  const run = engine.create(w.project.id, {
+    title: "Reuse connection",
+    prompt: "TEST_EDIT",
+    sandbox: "workspace-write",
+  });
+  engine.queue(run.id);
+  await until(() => w.store.get("run", run.id).status === "review");
+  const first = w.store.get("run", run.id),
+    identity = first.worker.identity;
+  assert.equal(engine.processes.get(run.id).idle, true);
+
+  engine.queue(run.id, "TEST_EDIT again");
+  await until(
+    () =>
+      w.store.get("run", run.id).status === "review" &&
+      w.store.get("run", run.id).attempt === 2,
+  );
+  const result = w.store.get("run", run.id),
+    events = w.store.events({ runId: run.id });
+  assert.equal(result.worker.identity, identity);
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "worker.phase" &&
+        event.data.phase === "Connecting to Codex",
+    ).length,
+    1,
+  );
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === "worker.phase" &&
+        event.data.phase === "Connecting project browser",
+    ).length,
+    1,
+  );
+  assert.equal(browserConnections, 1);
+  assert.equal(
+    events.filter((event) => event.type === "thread.started").length,
+    1,
+  );
+  assert.equal(
+    events.filter((event) => event.type === "worker.resumed").length,
+    1,
+  );
+  assert.equal(result.usage.input_tokens, 40);
+  assert.equal(result.usage.output_tokens, 20);
+});
 test("worker crash becomes interrupted and never automatically retries", async (t) => {
   const w = await setup(t),
     engine = w.createEngine();

@@ -21,7 +21,12 @@ export function deleteSession({ store, engine }, key, input) {
     const reason = deletionBlockedReason(item);
     if (reason) throw new Error(reason);
     engine.assertIdleWorktree(item, { allowTeamReaders: false });
-    if (engine.processes.has(item.id) || engine.validations.has(item.id))
+    engine.releaseIdleWorker(item.id);
+    if (
+      (engine.processes.has(item.id) &&
+        !engine.processes.get(item.id).releasing) ||
+      engine.validations.has(item.id)
+    )
       throw new Error("Wait for this session to stop before deleting it.");
   }
   const deletedAt = now();
@@ -261,6 +266,7 @@ export function updateSessionOptions({ store, engine }, key, input) {
   )
     throw new Error("Settings can only change on an idle coding conversation.");
   engine.assertIdleWorktree(run);
+  engine.releaseIdleWorker(key);
   const defaults = sessionDefaults({ ...run, ...input, useTeam: false });
   const updated = store.patch("run", key, {
     sandbox: defaults.sandbox,

@@ -106,7 +106,8 @@ export class NativeBrowserBroker {
         c.runId === run.id ||
         !owner ||
         owner.deletedAt ||
-        owner.status !== "running" ||
+        (owner.status !== "running" &&
+          !(owner.status === "review" && owner.worker?.persistent === true)) ||
         owner.worker?.identity !== c.identity
       )
         this.tokens.delete(token);

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import http from "node:http";
 import net from "node:net";
 import { EventEmitter } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { createApp } from "../server/app.mjs";
 import {
@@ -801,7 +802,7 @@ test("worker connects the shared browser before fresh and resumed fixture turns"
         },
       }),
     );
-    await new Promise((resolve, reject) =>
+    const completed = new Promise((resolve, reject) =>
       execFile(
         process.execPath,
         [
@@ -812,6 +813,17 @@ test("worker connects the shared browser before fresh and resumed fixture turns"
         (error) => (error ? reject(error) : resolve()),
       ),
     );
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      const events = await readFile(
+        join(directory, "events.jsonl"),
+        "utf8",
+      ).catch(() => "");
+      if (events.includes('"type":"worker.idle"')) break;
+      await delay(25);
+    }
+    await writeFile(join(directory, "stop"), "stop");
+    await completed;
     const policy = JSON.parse(
       await readFile(join(directory, "policy.json"), "utf8"),
     );
