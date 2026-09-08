@@ -43,6 +43,8 @@ import {
   WorkspaceSidebar,
   SessionOptions,
   NewWorkspaceMenu,
+  DeleteSessionDialog,
+  RemoveProjectDialog,
 } from "../src/features/workspace.jsx";
 
 // Component interaction tests; these do not claim to replace visual browser QA.
@@ -2115,7 +2117,7 @@ test("sidebar deletion is confirmed, removes the selected chat and can be restor
   ).toBe(false);
 });
 
-test("sidebar delete is separate from selection and disabled for running, shell and managed entries", async () => {
+test("sidebar delete opens an explanation for running, shell and managed entries without selecting them", async () => {
   const user = userEvent.setup(),
     goRun = vi.fn(),
     onDelete = vi.fn();
@@ -2156,15 +2158,16 @@ test("sidebar delete is separate from selection and disabled for running, shell 
       chooseProject={() => {}}
     />,
   );
-  expect(
-    screen.getByRole("button", { name: "Delete chat: Active" }).disabled,
-  ).toBe(true);
-  expect(
-    screen.getByRole("button", { name: "Delete terminal: Shell" }).disabled,
-  ).toBe(true);
-  expect(
-    screen.getByRole("button", { name: "Delete chat: Team" }).disabled,
-  ).toBe(true);
+  for (const [label, id] of [
+    ["Delete chat: Active", "active"],
+    ["Delete terminal: Shell", "shell"],
+    ["Delete chat: Team", "team"],
+  ]) {
+    const button = screen.getByRole("button", { name: label });
+    expect(button.disabled).toBe(false);
+    await user.click(button);
+    expect(onDelete).toHaveBeenCalledWith(expect.objectContaining({ id }));
+  }
   await user.click(screen.getByRole("button", { name: "Delete chat: Idle" }));
   expect(onDelete).toHaveBeenCalledWith(
     expect.objectContaining({ id: "idle" }),
@@ -3226,4 +3229,130 @@ test("Fleet leaves paths and multiline prompts intact and Escape dismisses comma
     .filter(([url]) => url.endsWith("/start"))
     .at(-1);
   expect(JSON.parse(lastCall[1].body).prompt).toBe("/model\nExplain this text");
+});
+
+test.each([
+  [{ status: "running" }, "Stop this session", "Open session"],
+  [
+    { status: "draft", sessionKind: "terminal", shellOpen: true },
+    "Close the terminal",
+    "Open terminal",
+  ],
+  [
+    { status: "review", preview: { status: "running" } },
+    "Stop the preview",
+    "Open session",
+  ],
+  [
+    { status: "review", teamRole: "developer" },
+    "managed by a team",
+    "Open session",
+  ],
+])(
+  "deletion dialog explains the blocker and opens its session without deleting: %j",
+  async (fields, reason, action) => {
+    const user = userEvent.setup(),
+      onDelete = vi.fn(),
+      onInspect = vi.fn();
+    const run = { id: "blocked", title: "Blocked work", ...fields };
+    render(
+      <DeleteSessionDialog
+        run={run}
+        onDelete={onDelete}
+        onInspect={onInspect}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByRole("status").textContent).toContain(reason);
+    const confirm = screen.getByRole("button", {
+      name:
+        fields.sessionKind === "terminal" ? "Delete terminal" : "Delete chat",
+      exact: true,
+    });
+    expect(confirm.disabled).toBe(true);
+    await user.click(confirm);
+    expect(onDelete).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: action }));
+    expect(onInspect).toHaveBeenCalledWith("blocked");
+  },
+);
+
+test("managed chat deletion offers project removal with its scope explained", async () => {
+  const user = userEvent.setup(),
+    onRemoveProject = vi.fn(),
+    onDelete = vi.fn();
+  render(
+    <DeleteSessionDialog
+      run={{ id: "team", title: "Developer", status: "paused", teamId: "team" }}
+      onDelete={onDelete}
+      onRemoveProject={onRemoveProject}
+      onClose={() => {}}
+    />,
+  );
+  expect(screen.getByText(/To hide the whole group/)).toBeTruthy();
+  await user.click(
+    screen.getByRole("button", { name: "Remove project folder…" }),
+  );
+  expect(onRemoveProject).toHaveBeenCalledOnce();
+  expect(onDelete).not.toHaveBeenCalled();
+});
+
+test("project removal identifies each active blocker including hidden reviewers and links to its controls", async () => {
+  const user = userEvent.setup(),
+    onInspect = vi.fn(),
+    onRemove = vi.fn();
+  const props = {
+    project: { name: "Test project" },
+    onClose: () => {},
+    onInspect,
+    onRemove,
+  };
+  const { rerender } = render(
+    <RemoveProjectDialog
+      {...props}
+      runs={[
+        {
+          id: "review",
+          title: "Security reviewer",
+          teamRole: "security",
+          status: "running",
+        },
+        {
+          id: "shell",
+          title: "Build terminal",
+          status: "draft",
+          shellOpen: true,
+        },
+        { id: "idle", title: "Idle chat", status: "review" },
+      ]}
+    />,
+  );
+  expect(
+    screen.getByRole("button", { name: "Remove project", exact: true })
+      .disabled,
+  ).toBe(true);
+  expect(screen.queryByRole("button", { name: "Idle chat" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Security reviewer" }));
+  expect(onInspect).toHaveBeenCalledWith("review");
+  await user.click(screen.getByRole("button", { name: "Build terminal" }));
+  expect(onInspect).toHaveBeenCalledWith("shell");
+  expect(onRemove).not.toHaveBeenCalled();
+  rerender(
+    <RemoveProjectDialog
+      {...props}
+      runs={[
+        {
+          id: "review",
+          title: "Security reviewer",
+          teamRole: "security",
+          status: "review",
+        },
+      ]}
+    />,
+  );
+  expect(screen.queryByRole("status")).toBeNull();
+  await user.click(
+    screen.getByRole("button", { name: "Remove project", exact: true }),
+  );
+  expect(onRemove).toHaveBeenCalledOnce();
 });

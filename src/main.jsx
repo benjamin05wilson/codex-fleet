@@ -939,6 +939,22 @@ function App() {
             if (!deletingSession.current) setDeleteTarget(null);
           }}
           onDelete={deleteConversation}
+          onInspect={(id) => {
+            setDeleteTarget(null);
+            goRun(id);
+          }}
+          onRemoveProject={
+            state.projects.some(
+              (p) => p.id === deleteTarget.projectId && p.kind !== "scratch",
+            )
+              ? () => {
+                  setProjectDeleteTarget(
+                    state.projects.find((p) => p.id === deleteTarget.projectId),
+                  );
+                  setDeleteTarget(null);
+                }
+              : undefined
+          }
         />
       )}
       {projectDeleteTarget && (
@@ -950,6 +966,10 @@ function App() {
           busy={busy}
           onClose={() => setProjectDeleteTarget(null)}
           onRemove={removeProjectFolder}
+          onInspect={(id) => {
+            setProjectDeleteTarget(null);
+            goRun(id);
+          }}
         />
       )}
       {modal === "trash" && (
