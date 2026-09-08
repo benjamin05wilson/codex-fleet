@@ -7,7 +7,10 @@ import {
   Trash2,
   RotateCcw,
 } from "lucide-react";
-import { deletionBlockedReason } from "../../shared/session-lifecycle.mjs";
+import {
+  deletionBlockedReason,
+  sessionActivityBlockedReason,
+} from "../../shared/session-lifecycle.mjs";
 import { Button, Dialog, Field, Status, api } from "../ui.jsx";
 import { useCodexMetadata } from "./codex-metadata.jsx";
 import { codingDefault, yoloWarning } from "../../shared/permissions.mjs";
@@ -587,7 +590,7 @@ export function WorkspaceSidebar({
                         <button
                           className="icon-button"
                           aria-label={`Delete ${run.sessionKind === "terminal" ? "terminal" : "chat"}: ${run.title}`}
-                          disabled={busy || !!deletionBlockedReason(run)}
+                          disabled={busy}
                           onClick={() => onDelete(run)}
                         >
                           <Trash2 size={13} />
@@ -624,20 +627,54 @@ export function WorkspaceSidebar({
   );
 }
 
-export function DeleteSessionDialog({ run, onClose, onDelete, busy }) {
+export function DeleteSessionDialog({
+  run,
+  onClose,
+  onDelete,
+  onInspect,
+  onRemoveProject,
+  busy,
+}) {
   const label = run.sessionKind === "terminal" ? "terminal" : "chat";
   const reason = deletionBlockedReason(run);
+  const managed =
+    run.teamId ||
+    run.teamRole ||
+    run.teamInitial ||
+    run.workflowId ||
+    run.missionId;
   return (
     <Dialog title={`Delete ${label}?`} onClose={onClose}>
       <p className="delete-session-copy">
         Move <strong>{run.title}</strong> to Trash? You can restore it later.
         Chat history, project files and Git worktrees are kept.
       </p>
-      {reason && <p className="notice">{reason}</p>}
+      {reason && (
+        <p className="notice" role="status">
+          {reason}
+        </p>
+      )}
+      {reason && managed && (
+        <p>
+          Team and workflow chats are kept together. To hide the whole group,
+          remove its project folder from Fleet after its active work stops. The
+          files and chat history are kept.
+        </p>
+      )}
       <div className="dialog-actions">
         <Button autoFocus disabled={busy} onClick={onClose}>
           Cancel
         </Button>
+        {reason && onInspect && (
+          <Button disabled={busy} onClick={() => onInspect(run.id)}>
+            {run.sessionKind === "terminal" ? "Open terminal" : "Open session"}
+          </Button>
+        )}
+        {reason && managed && onRemoveProject && (
+          <Button disabled={busy} onClick={onRemoveProject}>
+            Remove project folder…
+          </Button>
+        )}
         <Button disabled={busy || !!reason} onClick={onDelete}>
           Delete {label}
         </Button>
@@ -651,21 +688,11 @@ export function RemoveProjectDialog({
   runs,
   onClose,
   onRemove,
+  onInspect,
   busy,
 }) {
-  const active = runs.some(
-    (run) =>
-      [
-        "queued",
-        "preparing",
-        "running",
-        "pausing",
-        "validating",
-        "accepting",
-      ].includes(run.status) ||
-      run.shellOpen ||
-      ["starting", "running", "stopping"].includes(run.preview?.status),
-  );
+  const blockers = runs.filter((run) => sessionActivityBlockedReason(run));
+  const active = blockers.length > 0;
   return (
     <Dialog title="Remove project folder?" onClose={onClose}>
       <p className="delete-session-copy">
@@ -677,9 +704,39 @@ export function RemoveProjectDialog({
         folder again reconnects the project and restores its conversations.
       </p>
       {active && (
-        <p className="notice">
-          Stop this project’s active chats, terminals and previews first.
-        </p>
+        <div className="notice" role="status">
+          <div>
+            <p>
+              Stop this project’s active chats, terminals and previews first:
+            </p>
+            <ul>
+              {blockers.map((run) => (
+                <li key={run.id}>
+                  {onInspect ? (
+                    <button
+                      type="button"
+                      className="context-action"
+                      disabled={busy}
+                      onClick={() => onInspect(run.id)}
+                    >
+                      {run.title}
+                    </button>
+                  ) : (
+                    <strong>{run.title}</strong>
+                  )}
+                  {" · "}
+                  {run.shellOpen
+                    ? "Terminal open"
+                    : ["starting", "running", "stopping"].includes(
+                          run.preview?.status,
+                        )
+                      ? "Preview active"
+                      : run.status}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
       )}
       <div className="dialog-actions">
         <Button autoFocus disabled={busy} onClick={onClose}>

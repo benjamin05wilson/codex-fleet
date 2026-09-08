@@ -1,5 +1,4 @@
-export function deletionBlockedReason(run) {
-  if (run.deletedAt) return "This chat is already in Trash.";
+export function sessionActivityBlockedReason(run) {
   if (
     [
       "preparing",
@@ -14,6 +13,13 @@ export function deletionBlockedReason(run) {
   if (run.shellOpen) return "Close the terminal before deleting this session.";
   if (["starting", "running", "stopping"].includes(run.preview?.status))
     return "Stop the preview before deleting this session.";
+  return "";
+}
+
+export function deletionBlockedReason(run) {
+  if (run.deletedAt) return "This chat is already in Trash.";
+  const activity = sessionActivityBlockedReason(run);
+  if (activity) return activity;
   if (
     run.teamId ||
     run.teamRole ||
