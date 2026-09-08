@@ -3084,3 +3084,146 @@ test("keyboard jump navigation opens project brain", async () => {
   expect(screen.getByText("Auto-maintained")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Edit note" })).toBeNull();
 });
+
+async function renderSlashChat(status = "review") {
+  const run = {
+    id: "slash-chat",
+    projectId: "one",
+    title: "Slash chat",
+    prompt: "Hello",
+    status,
+    sandbox: "read-only",
+    worktree: "/fixture",
+    workspaceKind: "main",
+    createdAt: new Date().toISOString(),
+    scopes: [],
+    files: [],
+    dependencies: [],
+    usage: {},
+  };
+  const fetchMock = vi.fn(async (url) => ({
+    ok: true,
+    json: async () =>
+      url === "/api/codex" ? { models: [] } : { ...run, events: [] },
+  }));
+  vi.stubGlobal("fetch", fetchMock);
+  render(
+    <RunDetail
+      runId={run.id}
+      project={{ id: "one", path: "/fixture" }}
+      state={{ runs: [run], findings: [] }}
+      act={(fn) => fn()}
+      goRun={() => {}}
+      onSettings={() => {}}
+    />,
+  );
+  const input = await screen.findByRole("textbox", {
+    name: "Follow-up instruction",
+  });
+  return { input, fetchMock, user: userEvent.setup() };
+}
+
+test("Fleet slash menu supports keyboard completion and opens model settings without an agent turn", async () => {
+  const { input, fetchMock, user } = await renderSlashChat();
+  await user.type(input, "/");
+  expect(screen.getAllByRole("option")).toHaveLength(10);
+  await user.keyboard("{ArrowDown}{Tab}");
+  expect(input.value).toBe("/model");
+  await user.keyboard("{Enter}");
+  expect(
+    await screen.findByRole("heading", { name: "Conversation settings" }),
+  ).toBeTruthy();
+  expect(input.value).toBe("");
+  expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/start"))).toBe(
+    false,
+  );
+});
+
+test("Fleet slash commands work by clicking a suggestion and submitting the send button", async () => {
+  const { input, fetchMock, user } = await renderSlashChat();
+  await user.type(input, "/di");
+  await user.click(screen.getByRole("option", { name: /\/diff/ }));
+  expect(
+    await screen.findByRole("heading", { name: "No changes to inspect" }),
+  ).toBeTruthy();
+  await user.type(input, "/help");
+  await user.click(
+    screen.getByRole("button", { name: "Send follow-up", exact: true }),
+  );
+  expect(
+    await screen.findByRole("heading", { name: "Chat commands" }),
+  ).toBeTruthy();
+  expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/start"))).toBe(
+    false,
+  );
+});
+
+test("unsupported Fleet commands and arguments retain the draft and never reach the agent", async () => {
+  const { input, fetchMock, user } = await renderSlashChat();
+  await user.type(input, "/compact{Enter}");
+  expect(screen.getByRole("alert").textContent).toContain(
+    "Unknown command /compact",
+  );
+  expect(input.value).toBe("/compact");
+  await user.clear(input);
+  await user.type(input, "/model example{Enter}");
+  expect(screen.getByRole("alert").textContent).toContain(
+    "does not take arguments",
+  );
+  expect(input.value).toBe("/model example");
+  expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/start"))).toBe(
+    false,
+  );
+});
+
+test.each([
+  ["running", "pause"],
+  ["queued", "cancel"],
+])(
+  "Fleet /stop handles a %s reply while messages and settings stay locked",
+  async (status, action) => {
+    const { input, fetchMock, user } = await renderSlashChat(status);
+    await user.type(input, "A normal message");
+    expect(
+      screen.getByRole("button", { name: "Send follow-up", exact: true })
+        .disabled,
+    ).toBe(true);
+    await user.clear(input);
+    await user.type(input, "/model{Enter}");
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Settings are locked",
+    );
+    await user.clear(input);
+    await user.type(input, "/stop{Enter}");
+    await waitFor(() => expect(input.value).toBe(""));
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, options]) =>
+          url.endsWith(`/${action}`) && options.method === "POST",
+      ),
+    ).toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/start"))).toBe(
+      false,
+    );
+  },
+);
+
+test("Fleet leaves paths and multiline prompts intact and Escape dismisses command suggestions", async () => {
+  const { input, fetchMock, user } = await renderSlashChat();
+  await user.type(input, "/");
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("listbox", { name: "Chat commands" })).toBeNull();
+  await user.clear(input);
+  await user.type(input, "/tmp/project/file.js{Enter}");
+  await waitFor(() => expect(input.value).toBe(""));
+  const calls = fetchMock.mock.calls.filter(([url]) => url.endsWith("/start"));
+  expect(JSON.parse(calls[0][1].body).prompt).toBe("/tmp/project/file.js");
+  fireEvent.change(input, { target: { value: "/model\nExplain this text" } });
+  await user.click(
+    screen.getByRole("button", { name: "Send follow-up", exact: true }),
+  );
+  const lastCall = fetchMock.mock.calls
+    .filter(([url]) => url.endsWith("/start"))
+    .at(-1);
+  expect(JSON.parse(lastCall[1].body).prompt).toBe("/model\nExplain this text");
+});

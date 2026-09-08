@@ -1,5 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import {
+  slashCommands,
+  parseSlashCommand,
+  matchingSlashCommands,
+} from "./slash-commands.js";
 import { TeamReviews, TeamBadge } from "./team.jsx";
 import { SessionFiles, SessionOptions } from "./workspace.jsx";
 import { createRoot } from "react-dom/client";
@@ -438,6 +443,21 @@ function RunDetail({
   const conversationContentRef = useRef(null);
   const composerRef = useRef(null);
   const [editingMessage, setEditingMessage] = useState(null);
+  const [commandError, setCommandError] = useState("");
+  const [commandHelp, setCommandHelp] = useState(false);
+  const [commandIndex, setCommandIndex] = useState(0);
+  const [commandsDismissed, setCommandsDismissed] = useState(false);
+  const commandMatches = commandsDismissed
+    ? []
+    : matchingSlashCommands(followup);
+  const selectedCommand =
+    commandMatches[commandIndex % (commandMatches.length || 1)];
+  useEffect(() => {
+    if (selectedCommand)
+      document
+        .getElementById(`chat-command-${runId}-${selectedCommand.name}`)
+        ?.scrollIntoView?.({ block: "nearest" });
+  }, [runId, selectedCommand?.name]);
   const [requestedFile, setRequestedFile] = useState(null);
   const [editorDirty, setEditorDirty] = useState(false);
   const [fileError, setFileError] = useState("");
@@ -558,7 +578,12 @@ function RunDetail({
         }
       }
     });
-  const start = () => submitMessage(followup);
+  const start = () => {
+    const command = parseSlashCommand(followup);
+    if (command || followup.trim() === "/")
+      return executeCommand(command || { name: "help", args: "" });
+    return submitMessage(followup);
+  };
   const canSend =
     !busy &&
     !isActive &&
@@ -735,8 +760,69 @@ function RunDetail({
       if (c) setContext(c);
     }
   };
+  const executeCommand = async ({ name, args = "" }) => {
+    if (busy) return;
+    const command = slashCommands.find((entry) => entry.name === name);
+    setCommandError("");
+    if (!command) {
+      setCommandError(
+        `Unknown command /${name}. Type /help to see Fleet's supported commands.`,
+      );
+      return;
+    }
+    if (args) {
+      setCommandError(
+        `/${name} does not take arguments. Run /${name} to ${command.description.toLowerCase()}.`,
+      );
+      return;
+    }
+    if (command.settings && !canConfigure) {
+      setCommandError(
+        "Settings are locked while this session is busy or managed.",
+      );
+      return;
+    }
+    if (name === "stop") {
+      const action =
+        run.status === "queued"
+          ? "cancel"
+          : ["running", "preparing"].includes(run.status)
+            ? "pause"
+            : null;
+      if (!action) {
+        setCommandError("There is no running reply to stop.");
+        return;
+      }
+      const result = await act(() =>
+        api(`/runs/${runId}/${action}`, "POST", {}),
+      );
+      if (!result) return;
+    } else if (command.settings) setOptionsOpen(true);
+    else if (command.tool) await showTool(command.tool);
+    else if (name === "help") setCommandHelp(true);
+    setFollowup("");
+    setEditingMessage(null);
+    setCommandsDismissed(false);
+    setCommandIndex(0);
+  };
   return (
     <div className="run-detail">
+      {commandHelp && (
+        <Dialog title="Chat commands" onClose={() => setCommandHelp(false)}>
+          <p>
+            Type / in the chat to choose a command. Use ↑ and ↓ to select, Enter
+            to run, or Tab to complete.
+          </p>
+          <dl className="chat-command-help">
+            {slashCommands.map((command) => (
+              <React.Fragment key={command.name}>
+                <dt>/{command.name}</dt>
+                <dd>{command.description}</dd>
+              </React.Fragment>
+            ))}
+          </dl>
+        </Dialog>
+      )}
       {requestedFile && (
         <Dialog
           title={requestedFile.path}
@@ -1159,6 +1245,35 @@ function RunDetail({
                   start();
                 }}
               >
+                {commandError && (
+                  <div className="notice error" role="alert">
+                    {commandError}
+                  </div>
+                )}
+                {commandMatches.length > 0 && (
+                  <div
+                    className="chat-command-menu"
+                    id={`chat-commands-${runId}`}
+                    role="listbox"
+                    aria-label="Chat commands"
+                  >
+                    {commandMatches.map((command) => (
+                      <button
+                        type="button"
+                        role="option"
+                        id={`chat-command-${runId}-${command.name}`}
+                        aria-selected={selectedCommand?.name === command.name}
+                        key={command.name}
+                        disabled={busy}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => executeCommand(command)}
+                      >
+                        <strong>/{command.name}</strong>
+                        <span>{command.description}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {editingMessage && (
                   <div className="chat-edit-banner">
                     <span>Edit & resend · sends a new message</span>
@@ -1178,7 +1293,45 @@ function RunDetail({
                   rows={2}
                   maxLength={30000}
                   autoFocus={run.waitingForTask}
+                  aria-controls={
+                    commandMatches.length ? `chat-commands-${runId}` : undefined
+                  }
+                  aria-activedescendant={
+                    selectedCommand
+                      ? `chat-command-${runId}-${selectedCommand.name}`
+                      : undefined
+                  }
                   onKeyDown={(e) => {
+                    if (e.nativeEvent.isComposing) return;
+                    if (commandMatches.length && !e.shiftKey) {
+                      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                        e.preventDefault();
+                        setCommandIndex(
+                          (index) =>
+                            (index +
+                              (e.key === "ArrowDown" ? 1 : -1) +
+                              commandMatches.length) %
+                            commandMatches.length,
+                        );
+                        return;
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setCommandsDismissed(true);
+                        return;
+                      }
+                      if (e.key === "Tab") {
+                        e.preventDefault();
+                        setFollowup(`/${selectedCommand.name}`);
+                        setCommandIndex(0);
+                        return;
+                      }
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        executeCommand(selectedCommand);
+                        return;
+                      }
+                    }
                     if (
                       e.key === "Enter" &&
                       !e.shiftKey &&
@@ -1199,7 +1352,12 @@ function RunDetail({
                       : "Continue the conversation…"
                   }
                   value={followup}
-                  onChange={(e) => setFollowup(e.target.value)}
+                  onChange={(e) => {
+                    setFollowup(e.target.value);
+                    setCommandError("");
+                    setCommandIndex(0);
+                    setCommandsDismissed(false);
+                  }}
                 />
                 <div className="composer-bottom">
                   <button
@@ -1223,7 +1381,7 @@ function RunDetail({
                   <span className="composer-hint">
                     {run.waitingForTask
                       ? "Sending uses your Codex allowance"
-                      : "Enter to send · Shift+Enter for a new line"}
+                      : "Enter to send · Shift+Enter for a new line · / for commands"}
                   </span>
                   <button
                     type="submit"
@@ -1231,12 +1389,10 @@ function RunDetail({
                     disabled={
                       busy ||
                       !followup.trim() ||
-                      isActive ||
-                      run.status === "queued" ||
-                      run.shellOpen ||
-                      ["starting", "running", "stopping"].includes(
-                        run.preview?.status,
-                      )
+                      (!(
+                        parseSlashCommand(followup) || followup.trim() === "/"
+                      ) &&
+                        !canSend)
                     }
                     aria-label={
                       editingMessage

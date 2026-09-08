@@ -264,3 +264,40 @@
     gap: 6px;
   }
 }
+
+.chat-command-menu {
+  max-height: 240px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+  border: 1px solid #353943;
+  border-radius: 8px;
+  background: #1b1d21;
+}
+.chat-command-menu > button {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  background: transparent;
+  color: #eef1f6;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-command-menu > button[aria-selected="true"],
+.chat-command-menu > button:hover {
+  background: #30343e;
+}
+.chat-command-menu > button > span {
+  color: #a2a9b6;
+  font-size: 12px;
+}
+.chat-command-help {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 12px 20px;
+}
+.chat-command-help dd {
+  margin: 0;
+}
