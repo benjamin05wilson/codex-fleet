@@ -184,8 +184,7 @@ export class Teams {
         );
       const project = this.store.get("project", projectId);
       const members = {};
-      this.store.db.exec("BEGIN IMMEDIATE");
-      try {
+      this.store.transaction(() => {
         for (const role of roles) {
           const run = this.engine.create(projectId, {
             title: teamRoles.find((r) => r.id === role).title,
@@ -212,11 +211,7 @@ export class Teams {
           createdAt: now(),
           activationPending: true,
         });
-        this.store.db.exec("COMMIT");
-      } catch (e) {
-        this.store.db.exec("ROLLBACK");
-        throw e;
-      }
+      });
       // Allocation is durable before any model is launched. Failed setup is visible and explicit to retry.
       try {
         const lead = this.store.get("run", members.developer);
@@ -418,8 +413,7 @@ export class Teams {
       reports: {},
       createdAt: now(),
     };
-    this.store.db.exec("BEGIN IMMEDIATE");
-    try {
+    this.store.transaction(() => {
       this.store.put("team-round", round);
       this.store.patch("team", team.id, {
         roundsUsed: team.roundsUsed + 1,
@@ -477,11 +471,7 @@ export class Teams {
         snapshot: digest,
         roles,
       });
-      this.store.db.exec("COMMIT");
-    } catch (e) {
-      this.store.db.exec("ROLLBACK");
-      throw e;
-    }
+    });
   }
   async reconcileRound(round) {
     const team = this.get(round.projectId),

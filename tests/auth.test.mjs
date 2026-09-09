@@ -1,3 +1,4 @@
+import { fleetFetch } from "./helpers/http.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -158,7 +159,7 @@ test("HTTP start is blocked before mutating a draft; OAuth URLs are not persiste
   });
   await new Promise((r) => app.server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${app.server.address().port}/api`;
-  const s = await fetch(base + "/state").then((r) => r.json());
+  const s = await fleetFetch(base + "/state").then((r) => r.json());
   const post = (path, value, token = s.csrf) =>
     fetch(base + path, {
       method: "POST",

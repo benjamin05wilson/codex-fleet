@@ -34,7 +34,7 @@ test("desktop polls throughout slow execution and command timeout without reconn
     },
     fetchImpl: async (url, options) => {
       const action = url.split("/").at(-1);
-      if (action === "state")
+      if (action === "bootstrap")
         return { ok: true, json: async () => ({ csrf: "fixture" }) };
       const body = JSON.parse(options.body);
       let value;

@@ -139,6 +139,9 @@ async function runNative() {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
+      // CI and parallel fixture windows may occlude this window. Layout/paint
+      // checks must continue even when the OS throttles background windows.
+      backgroundThrottling: false,
       ...(process.argv.includes("--ui")
         ? {
             preload: fileURLToPath(
@@ -381,7 +384,7 @@ async function runNative() {
             );
             // Wait for style/layout and paint before measuring and capturing.
             await window.webContents.executeJavaScript(
-              "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+              "Promise.race([new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))), new Promise((_, reject) => setTimeout(() => reject(new Error('Layout paint timed out')), 5000))])",
             );
             const layout = await window.webContents.executeJavaScript(`(() => {
               const rect = s => { const r = document.querySelector(s).getBoundingClientRect(); return {left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width}; };

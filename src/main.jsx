@@ -307,24 +307,35 @@ function App() {
     }
   };
   useEffect(() => {
-    refresh();
-    const stream =
-      typeof EventSource === "undefined"
-        ? null
-        : new EventSource("/api/stream");
-    let update;
-    if (stream) {
+    let stream,
+      update,
+      reconnect,
+      disposed = false;
+    const connect = () => {
+      if (disposed || typeof EventSource === "undefined") return;
+      stream?.close();
+      stream = new EventSource("/api/stream");
       stream.addEventListener("change", () => {
         clearTimeout(update);
         update = setTimeout(refresh, 120);
       });
       stream.addEventListener("open", refresh);
-      stream.addEventListener("error", () => setOffline(true));
-    }
+      stream.addEventListener("error", () => {
+        stream.close();
+        setOffline(true);
+        clearTimeout(reconnect);
+        // A daemon restart rotates the capability/cookie. Refresh the client
+        // before recreating EventSource, which does not retry HTTP 403 itself.
+        reconnect = setTimeout(() => refresh().then(connect), 1000);
+      });
+    };
+    refresh().then(connect);
     const t = setInterval(refresh, 30_000);
     return () => {
+      disposed = true;
       clearInterval(t);
       stream?.close();
+      clearTimeout(reconnect);
       clearTimeout(update);
       clearTimeout(toastTimer.current);
     };

@@ -1,3 +1,4 @@
+import { fleetFetch } from "./helpers/http.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -414,7 +415,7 @@ test("local HTTP API rejects foreign origins, forged hosts and mutation without 
       .status,
     403,
   );
-  const state = await (await fetch(base + "/api/state")).json();
+  const state = await (await fleetFetch(base + "/api/state")).json();
   const response = await fetch(base + "/api/projects", {
     method: "POST",
     headers: { "X-Fleet-Token": state.csrf },
@@ -424,7 +425,7 @@ test("local HTTP API rejects foreign origins, forged hosts and mutation without 
   const project = await response.json();
   assert.equal(project.path, w.project.path);
   const brain = await (
-    await fetch(base + `/api/projects/${project.id}/brain`)
+    await fleetFetch(base + `/api/projects/${project.id}/brain`)
   ).json();
   for (const filename of [
     "Home.md",

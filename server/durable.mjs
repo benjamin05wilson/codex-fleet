@@ -164,8 +164,7 @@ export function attachWorker(engine, run) {
         }
         if (entry.seq <= current.worker.cursor) continue;
         if (entry.event.type === "worker.idle") becameIdle = true;
-        engine.store.db.exec("BEGIN IMMEDIATE");
-        try {
+        engine.store.transaction(() => {
           engine.onEvent(run.id, entry.event, state);
           current = engine.store.patch("run", run.id, {
             worker: {
@@ -176,11 +175,7 @@ export function attachWorker(engine, run) {
                 : {}),
             },
           });
-          engine.store.db.exec("COMMIT");
-        } catch (e) {
-          engine.store.db.exec("ROLLBACK");
-          throw e;
-        }
+        });
       }
       const status = JSON.parse(
         await readFile(join(run.worker.directory, "status.json"), "utf8").catch(

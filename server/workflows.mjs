@@ -163,8 +163,7 @@ export class Workflows {
       throw new Error(
         "Set a project validation command before approving a coding workflow.",
       );
-    this.store.db.exec("BEGIN IMMEDIATE");
-    try {
+    return this.store.transaction(() => {
       const runs = [];
       for (const t of workflow.tasks) {
         const run = this.engine.create(workflow.projectId, {
@@ -198,12 +197,8 @@ export class Workflows {
         id: key,
         limits: workflow.limits,
       });
-      this.store.db.exec("COMMIT");
       return this.store.get("workflow", key);
-    } catch (error) {
-      this.store.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
   async tick() {
     if (this.busy || this.engine.closing) return;

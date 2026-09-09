@@ -1,3 +1,4 @@
+import { fleetFetch } from "./helpers/http.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
@@ -69,8 +70,8 @@ test("API reports actual concurrency and no longer creates example projects", as
     await rm(root, { recursive: true, force: true });
   });
   const base = `http://127.0.0.1:${app.server.address().port}`;
-  const state = await fetch(base + "/api/state").then((r) => r.json());
-  const capabilities = await fetch(base + "/api/capabilities").then((r) =>
+  const state = await fleetFetch(base + "/api/state").then((r) => r.json());
+  const capabilities = await fleetFetch(base + "/api/capabilities").then((r) =>
     r.json(),
   );
   assert.equal(state.limits.concurrency, 1);

@@ -31,7 +31,8 @@ export function connectNativeAgent({
       const signal = AbortSignal.any([lifetime.signal, transport.signal]);
       let execution = Promise.resolve();
       try {
-        const response = await fetchImpl(origin + "/api/state", {
+        const response = await fetchImpl(origin + "/api/bootstrap", {
+          headers: { "X-Fleet-Bootstrap": "1" },
           signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(5000)]),
         });
         if (!response.ok) throw new Error("Fleet service is unavailable.");

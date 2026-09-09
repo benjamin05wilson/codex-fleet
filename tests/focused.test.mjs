@@ -1,3 +1,4 @@
+import { fleetFetch } from "./helpers/http.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -600,7 +601,7 @@ test("API duplicate identities replay a result and reject changed payloads", asy
       app.store.close();
     });
     const base = `http://127.0.0.1:${app.server.address().port}`;
-    const state = await fetch(base + "/api/state").then((r) => r.json());
+    const state = await fleetFetch(base + "/api/state").then((r) => r.json());
     const headers = {
       "Content-Type": "application/json",
       "X-Fleet-Token": state.csrf,

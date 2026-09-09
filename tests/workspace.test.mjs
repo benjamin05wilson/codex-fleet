@@ -1,3 +1,4 @@
+import { fleetFetch } from "./helpers/http.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -216,7 +217,7 @@ test("mission trash stops queued tasks and start refuses missing chats before qu
   assert.equal(app.store.get("run", other.id).status, "paused");
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${app.server.address().port}/api`;
-  const state = await fetch(base + "/state").then((r) => r.json());
+  const state = await fleetFetch(base + "/state").then((r) => r.json());
   const response = await fetch(base + "/missions/mission/start", {
     method: "POST",
     headers: { "x-fleet-token": state.csrf },
@@ -278,7 +279,7 @@ test("delete/restore API enforces CSRF, hides deleted chats from state/search an
   app.store.patch("run", run.id, { title: "Recoverable conversation" });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${app.server.address().port}/api`;
-  const state = await fetch(base + "/state").then((r) => r.json());
+  const state = await fleetFetch(base + "/state").then((r) => r.json());
   const mutate = (path, method, input, token = state.csrf) =>
     fetch(base + path, {
       method,
@@ -295,16 +296,16 @@ test("delete/restore API enforces CSRF, hides deleted chats from state/search an
     (await mutate(`/runs/${run.id}`, "DELETE", { approved: true })).status,
     200,
   );
-  const deleted = await fetch(base + "/state").then((r) => r.json());
+  const deleted = await fleetFetch(base + "/state").then((r) => r.json());
   assert.equal(deleted.runs.length, 0);
   assert.equal(deleted.deletedRuns[0].id, run.id);
   assert.equal(deleted.deletedRuns[0].prompt, undefined);
-  const search = await fetch(base + "/search?q=Recoverable").then((r) =>
+  const search = await fleetFetch(base + "/search?q=Recoverable").then((r) =>
     r.json(),
   );
   assert.ok(!search.some((r) => r.kind === "session"));
   for (const path of [`/runs/${run.id}`, `/runs/${run.id}/files`])
-    assert.equal((await fetch(base + path)).status, 410);
+    assert.equal((await fleetFetch(base + path)).status, 410);
   for (const action of ["start", "terminal/open", "options", "accept"])
     assert.equal(
       (
@@ -323,7 +324,7 @@ test("delete/restore API enforces CSRF, hides deleted chats from state/search an
     (await mutate(`/runs/${run.id}/restore`, "POST", {})).status,
     200,
   );
-  const restored = await fetch(base + "/state").then((r) => r.json());
+  const restored = await fleetFetch(base + "/state").then((r) => r.json());
   assert.equal(restored.runs[0].id, run.id);
   assert.equal(restored.deletedRuns.length, 0);
   assert.equal(restored.runs[0].attempt, 0);
@@ -344,17 +345,17 @@ test("project files API lists and previews the current working tree safely", asy
   await writeFile(join(project.path, ".env"), "SECRET=not-for-the-ui\n");
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${app.server.address().port}/api`;
-  const listing = await fetch(`${base}/projects/${project.id}/files`).then(
+  const listing = await fleetFetch(`${base}/projects/${project.id}/files`).then(
     (r) => r.json(),
   );
   assert.ok(listing.files.includes("current.js"));
   assert.ok(!listing.files.includes(".env"));
-  const preview = await fetch(
+  const preview = await fleetFetch(
     `${base}/projects/${project.id}/files?path=current.js`,
   ).then((r) => r.json());
   assert.equal(preview.content, "export const current = true;\n");
   assert.equal(
-    (await fetch(`${base}/projects/${project.id}/files?path=.env`)).status,
+    (await fleetFetch(`${base}/projects/${project.id}/files?path=.env`)).status,
     400,
   );
 });
@@ -499,7 +500,7 @@ test("new-session API enforces CSRF and terminals own the actual project folder 
   });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${app.server.address().port}/api`;
-  const state = await fetch(base + "/state").then((r) => r.json());
+  const state = await fleetFetch(base + "/state").then((r) => r.json());
   const post = (path, input, token = state.csrf) =>
     fetch(base + path, {
       method: "POST",
@@ -623,7 +624,7 @@ test("settings endpoint enforces consent, CSRF, busy-state and reviewer restrict
   const run = await quickSession(app, { approved: true });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${app.server.address().port}/api`;
-  const state = await fetch(base + "/state").then((r) => r.json());
+  const state = await fleetFetch(base + "/state").then((r) => r.json());
   const options = { approved: true, sandbox: "workspace-write" };
   const post = (token) =>
     fetch(base + `/runs/${run.id}/options`, {

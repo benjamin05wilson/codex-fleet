@@ -489,24 +489,31 @@ function RunDetail({
             }));
         })
         .catch(() => {});
-    load();
-    const stream =
-      typeof EventSource === "undefined"
-        ? null
-        : new EventSource("/api/stream");
-    let scheduled;
-    stream?.addEventListener("change", () => {
-      if (!scheduled)
-        scheduled = setTimeout(() => {
-          scheduled = null;
-          load();
-        }, 150);
-    });
+    let stream, scheduled, reconnect;
+    const connect = () => {
+      if (!alive || typeof EventSource === "undefined") return;
+      stream?.close();
+      stream = new EventSource("/api/stream");
+      stream.addEventListener("change", () => {
+        if (!scheduled)
+          scheduled = setTimeout(() => {
+            scheduled = null;
+            load();
+          }, 150);
+      });
+      stream.addEventListener("error", () => {
+        stream.close();
+        clearTimeout(reconnect);
+        reconnect = setTimeout(() => load().then(connect), 1000);
+      });
+    };
+    load().then(connect);
     const t = setInterval(load, 30_000);
     return () => {
       alive = false;
       clearInterval(t);
       clearTimeout(scheduled);
+      clearTimeout(reconnect);
       stream?.close();
     };
   }, [runId]);

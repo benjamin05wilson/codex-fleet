@@ -13,6 +13,10 @@ export class Store {
     const existed = existsSync(path);
     this.changes = new EventEmitter();
     this.changes.setMaxListeners(100);
+    this.transactions = [];
+    this.transactionSequence = 0;
+    this.notifications = [];
+    this.flushing = false;
     this.db = new DatabaseSync(path);
     chmodSync(path, 0o600);
     const version = this.db.prepare("PRAGMA user_version").get().user_version;
@@ -56,13 +60,73 @@ export class Store {
       PRAGMA user_version=1;
     `);
   }
+  // SQLite and its notification stream share one commit boundary. Callbacks
+  // must be synchronous: never hold a connection-wide transaction over await.
+  transaction(fn) {
+    if (fn?.constructor?.name === "AsyncFunction")
+      throw new TypeError("Store transactions require a synchronous callback.");
+    const nested = this.transactions.length > 0;
+    const savepoint = `fleet_${++this.transactionSequence}`;
+    this.db.exec(nested ? `SAVEPOINT ${savepoint}` : "BEGIN IMMEDIATE");
+    const pending = [];
+    this.transactions.push(pending);
+    let result;
+    try {
+      result = fn();
+      if (result && typeof result.then === "function")
+        throw new TypeError("Store transactions cannot return a Promise.");
+      this.db.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
+    } catch (error) {
+      this.db.exec(
+        nested ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : "ROLLBACK",
+      );
+      throw error;
+    } finally {
+      this.transactions.pop();
+    }
+    if (nested) this.transactions.at(-1).push(...pending);
+    else {
+      this.notifications.push(...pending);
+      // Flush after the SQL try/catch: listener failures must never attempt to
+      // roll back a transaction that has already committed.
+      this.flushNotifications();
+    }
+    return result;
+  }
+  notify(name, value) {
+    if (this.transactions.length) this.transactions.at(-1).push([name, value]);
+    else {
+      this.notifications.push([name, value]);
+      this.flushNotifications();
+    }
+  }
+  flushNotifications() {
+    if (this.flushing) return;
+    this.flushing = true;
+    let failure;
+    try {
+      // Reentrant writes enqueue after the already committed notifications.
+      for (let i = 0; i < this.notifications.length; i++) {
+        try {
+          this.changes.emit(...this.notifications[i]);
+        } catch (error) {
+          failure ||= error;
+        }
+      }
+    } finally {
+      this.notifications = [];
+      this.flushing = false;
+    }
+    if (failure) throw failure;
+  }
   put(kind, value) {
+    this.assertManagedTransaction();
     this.db
       .prepare(
         "INSERT INTO objects VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",
       )
       .run(kind, value.id, JSON.stringify(value));
-    this.changes.emit("change", { kind, id: value.id });
+    this.notify("change", { kind, id: value.id });
     return value;
   }
   get(kind, key) {
@@ -87,6 +151,7 @@ export class Store {
     });
   }
   event(projectId, runId, type, data = {}) {
+    this.assertManagedTransaction();
     const time = now();
     const result = this.db
       .prepare(
@@ -101,8 +166,8 @@ export class Store {
       type,
       data,
     };
-    this.changes.emit("event", event);
-    this.changes.emit("change", { kind: "event", id: event.seq });
+    this.notify("event", event);
+    this.notify("change", { kind: "event", id: event.seq });
     return event;
   }
   replay(after = 0, limit = 500) {
@@ -117,6 +182,12 @@ export class Store {
         type: r.type,
         data: JSON.parse(r.data),
       }));
+  }
+  assertManagedTransaction() {
+    if (this.db.isTransaction && !this.transactions.length)
+      throw new Error(
+        "Use Store.transaction() for transactional Store writes.",
+      );
   }
   events({
     runId,

@@ -1,3 +1,4 @@
+import { fleetFetch } from "./helpers/http.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -27,7 +28,7 @@ test("the product daemon uses the native broker and rejects retired launch, shar
   assert.equal(app.engine.browsers.connection({ id: "run" }, {}), null);
   await new Promise((r) => app.server.listen(0, "127.0.0.1", r));
   const origin = "http://127.0.0.1:" + app.server.address().port;
-  const state = await (await fetch(origin + "/api/state")).json();
+  const state = await (await fleetFetch(origin + "/api/state")).json();
   assert.equal(state.browserMode, "native");
   assert.equal(state.browserAvailable, false);
   assert.equal(state.browserAgentAvailable, true);
@@ -110,7 +111,7 @@ test("the product daemon uses the native broker and rejects retired launch, shar
   const launcherToken = (await launcher.json()).token;
   assert.equal(launcherToken.length, 64);
   assert.equal(
-    (await (await fetch(origin + "/api/state")).json())
+    (await (await fleetFetch(origin + "/api/state")).json())
       .browserAutoOpenAvailable,
     true,
   );

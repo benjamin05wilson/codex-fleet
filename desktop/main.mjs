@@ -34,6 +34,10 @@ const { nodeCandidates, desktopEnvironment } = await import(
 const { managedTools } = await import(
   pathToFileURL(join(root, "shared/managed-tools.mjs")).href
 );
+const { createClient } = await import(
+  pathToFileURL(join(root, "shared/client.mjs")).href
+);
+const daemonClient = createClient({ base: url + "/api" });
 if (app.isPackaged) {
   const tools = managedTools(process.resourcesPath);
   if (tools) {
@@ -120,7 +124,9 @@ else {
               readFileSync(preferencesPath, "utf8"),
             ).dataDir;
           } catch {}
-          let ready = await fetch(url + "/api/capabilities")
+          let ready = await fetch(url + "/api/bootstrap", {
+            headers: { "X-Fleet-Bootstrap": "1" },
+          })
             .then((r) => r.ok)
             .catch(() => false);
           if (!ready) {
@@ -174,7 +180,9 @@ else {
             child.unref();
             closeSync(log);
             for (let i = 0; i < 80; i++) {
-              ready = await fetch(url + "/api/capabilities")
+              ready = await fetch(url + "/api/bootstrap", {
+                headers: { "X-Fleet-Bootstrap": "1" },
+              })
                 .then((r) => r.ok)
                 .catch(() => false);
               if (ready) break;
@@ -185,9 +193,7 @@ else {
                 "Fleet daemon did not become ready. Inspect daemon.log in the Fleet data directory.",
               );
           }
-          const daemonState = await fetch(url + "/api/state").then((r) =>
-            r.json(),
-          );
+          const daemonState = await daemonClient.request("/state");
           if (daemonState.status?.dataDir) {
             mkdirSync(app.getPath("userData"), {
               recursive: true,
@@ -265,11 +271,8 @@ else {
             WebContentsView,
             session,
             validateProject: async (id) => {
-              const response = await fetch(url + "/api/state");
-              if (!response.ok) return false;
-              return (await response.json()).projects.some(
-                (project) => project.id === id,
-              );
+              const state = await daemonClient.request("/state");
+              return state.projects.some((project) => project.id === id);
             },
           });
           nativeBrowser = owner;

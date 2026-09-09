@@ -108,8 +108,7 @@ export function deleteSession({ store, engine, teams, workflows }, key, input) {
   const deletedAt = now();
   const reason =
     "Paused because a chat was moved to Trash. Restore it before resuming automatic work.";
-  store.db.exec("BEGIN IMMEDIATE");
-  try {
+  store.transaction(() => {
     for (const team of affectedTeams)
       store.patch("team", team.id, { enabled: false, reason });
     for (const workflow of affectedWorkflows)
@@ -147,11 +146,7 @@ export function deleteSession({ store, engine, teams, workflows }, key, input) {
     for (const item of related)
       store.patch("run", item.id, { deletedAt, deletionRootId: key });
     store.event(run.projectId, key, "session.deleted", { recoverable: true });
-    store.db.exec("COMMIT");
-  } catch (error) {
-    store.db.exec("ROLLBACK");
-    throw error;
-  }
+  });
   for (const item of related) {
     engine.releaseIdleWorker(item.id);
     engine.watchers.get(item.id)?.close();

@@ -24,6 +24,7 @@ import {
 import { Preview } from "../src/features/preview.jsx";
 import { HomePage } from "../src/features/home.jsx";
 import { BrainView, reconcileBrain } from "../src/features/brain.jsx";
+import { setToken } from "../src/ui.jsx";
 import { useNoteLayout } from "../src/features/brain-layout-hook.js";
 import {
   buildFileTree,
@@ -184,6 +185,7 @@ vi.mock("@xterm/addon-fit", () => ({
   },
 }));
 beforeEach(() => {
+  setToken("local-test-token");
   localStorage.clear();
   sessionStorage.clear();
   HTMLDialogElement.prototype.showModal = function () {
@@ -210,6 +212,36 @@ const emptyState = {
     dataDir: "/test/data",
   },
 };
+
+test("the authenticated change stream is recreated after a disconnect and cleaned up on unmount", async () => {
+  const streams = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({ ok: true, json: async () => emptyState })),
+  );
+  vi.stubGlobal(
+    "EventSource",
+    class {
+      constructor(url) {
+        this.url = url;
+        this.listeners = {};
+        streams.push(this);
+      }
+      addEventListener(name, fn) {
+        this.listeners[name] = fn;
+      }
+      close = vi.fn();
+    },
+  );
+  const view = render(<App />);
+  await waitFor(() => expect(streams).toHaveLength(1));
+  expect(streams[0].url).toBe("/api/stream");
+  await reactAct(() => streams[0].listeners.error());
+  expect(streams[0].close).toHaveBeenCalled();
+  await waitFor(() => expect(streams).toHaveLength(2), { timeout: 2500 });
+  view.unmount();
+  expect(streams[1].close).toHaveBeenCalled();
+});
 const brainNotes = [
   {
     filename: "Home.md",

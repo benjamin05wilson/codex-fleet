@@ -1,0 +1,35 @@
+name: Cross-platform
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  core:
+    name: Core (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name "Fleet CI"
+      - run: git config --global user.email "fleet-ci@example.invalid"
+      - run: npm run check
+      - name: macOS desktop brain smoke
+        if: runner.os == 'macOS'
+        run: node tests/live-brain.mjs --run
+      - name: macOS large graph regression
+        if: runner.os == 'macOS'
+        run: node tests/live-brain.mjs --run --large
+      - name: macOS native browser smoke
+        if: runner.os == 'macOS'
+        run: node tests/live-native-browser.mjs --run --ui --shared --auto-open --full-app

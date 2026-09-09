@@ -292,6 +292,10 @@ export async function createApp({
         send({ error: "Cross-origin requests are not allowed" }, 403);
         return;
       }
+      if (req.headers["sec-fetch-site"] === "cross-site") {
+        send({ error: "Cross-site requests are not allowed" }, 403);
+        return;
+      }
       res.setHeader("X-Content-Type-Options", "nosniff");
       res.setHeader("Referrer-Policy", "no-referrer");
       res.setHeader(
@@ -300,6 +304,42 @@ export async function createApp({
       );
       const path = url.pathname;
       if (path.startsWith("/api/")) {
+        const streamCookie = `fleet_stream_${port}`;
+        // Minimal first-party bootstrap. A non-simple header prevents browser
+        // forms/navigation from acquiring a session across origins.
+        if (path === "/api/bootstrap" && req.method === "GET") {
+          if (req.headers["x-fleet-bootstrap"] !== "1") {
+            send({ error: "Fleet bootstrap header required." }, 403);
+            return;
+          }
+          // EventSource cannot set headers. This cookie is accepted ONLY for
+          // the read-only event stream, never for other reads or mutations.
+          res.setHeader(
+            "Set-Cookie",
+            `${streamCookie}=${csrf}; Path=/api/stream; HttpOnly; SameSite=Strict`,
+          );
+          send({ csrf });
+          return;
+        }
+        const scopedAgent =
+          req.method === "POST" &&
+          ["/api/brain-agent", "/api/browser-agent"].includes(path);
+        const streamSession =
+          path === "/api/stream" &&
+          req.method === "GET" &&
+          String(req.headers.cookie || "")
+            .split(";")
+            .some((value) => value.trim() === `${streamCookie}=${csrf}`);
+        // Agent-only endpoints retain their narrower per-worker capabilities;
+        // never give a coding agent the general UI capability to read projects.
+        if (
+          !scopedAgent &&
+          !streamSession &&
+          req.headers["x-fleet-token"] !== csrf
+        ) {
+          send({ error: "Reload Fleet to refresh your local session." }, 403);
+          return;
+        }
         if (path === "/api/brain-agent" && req.method === "POST") {
           const token = String(req.headers.authorization || "").replace(
             /^Bearer /,
@@ -416,13 +456,6 @@ export async function createApp({
               { redactContent: false },
             ),
           );
-          return;
-        }
-        if (
-          !["GET", "HEAD"].includes(req.method) &&
-          req.headers["x-fleet-token"] !== csrf
-        ) {
-          send({ error: "Reload Fleet to refresh your local session." }, 403);
           return;
         }
         if (

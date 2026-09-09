@@ -1,3 +1,4 @@
+import { fleetFetch } from "./helpers/http.mjs";
 // Explicit opt-in integration: one real Codex model turn, isolated temporary repo.
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
@@ -31,7 +32,7 @@ await git(source, [
 const app = await createApp({ dataDir: join(root, "data"), concurrency: 1 });
 await new Promise((r) => app.server.listen(0, "127.0.0.1", r));
 const base = `http://127.0.0.1:${app.server.address().port}`;
-const { csrf } = await fetch(base + "/api/state").then((r) => r.json());
+const { csrf } = await fleetFetch(base + "/api/state").then((r) => r.json());
 async function post(path, input = {}) {
   const response = await fetch(base + path, {
     method: "POST",

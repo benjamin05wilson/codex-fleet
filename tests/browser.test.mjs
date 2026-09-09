@@ -1,3 +1,4 @@
+import { fleetFetch } from "./helpers/http.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
@@ -511,7 +512,7 @@ test("completed or changed worker attempts cannot reuse browser capabilities", a
 });
 test("browser API requires CSRF on reads and writes, rejects foreign origins and invalid agent tokens", async (t) => {
   const { app, base } = await fixture(t);
-  const state = await fetch(base + "/api/state").then((r) => r.json());
+  const state = await fleetFetch(base + "/api/state").then((r) => r.json());
   const endpoint = base + "/api/projects/project-a/browser";
   assert.equal((await fetch(endpoint)).status, 403);
   const headers = {
@@ -554,7 +555,7 @@ test("browser API requires CSRF on reads and writes, rejects foreign origins and
 });
 test("frame streaming requires browser credentials and releases listeners on disconnect", async (t) => {
   const { app, base } = await fixture(t);
-  const state = await fetch(base + "/api/state").then((r) => r.json());
+  const state = await fleetFetch(base + "/api/state").then((r) => r.json());
   const url = base + "/api/projects/project-a/browser/frames";
   assert.equal((await fetch(url)).status, 403);
   await app.browsers.start(
@@ -659,7 +660,7 @@ test("real HTTP large-frame delivery does not flood a client with cached images"
     image: "data:image/jpeg;base64," + "A".repeat(110000),
     seq: 1,
   };
-  const state = await (await fetch(base + "/api/state")).json();
+  const state = await (await fleetFetch(base + "/api/state")).json();
   const controller = new AbortController();
   const response = await fetch(
     base + "/api/projects/project-a/browser/frames",
@@ -1057,7 +1058,7 @@ test("browser API round-trips explicit mode and keep-open without enabling profi
     alive: () => true,
     close: async () => {},
   });
-  const state = await fetch(base + "/api/state").then((r) => r.json());
+  const state = await fleetFetch(base + "/api/state").then((r) => r.json());
   const endpoint = base + "/api/projects/project-a/browser";
   const headers = {
     "x-fleet-token": state.csrf,

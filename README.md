@@ -240,7 +240,19 @@ Versioned SQLite migrations back up legacy databases using SQLite's backup-safe 
 
 No Line Command databases, work repositories or source branches are imported or rewritten.
 
+The daemon holds an OS-backed SQLite ownership lock in `daemon-owner.sqlite` for its lifetime. `daemon.lock` records its PID, nonce and timestamps; PID liveness alone does not establish ownership. Crash recovery reconciles stale metadata while holding the exclusive lock. Do not remove either file while Fleet is running; the arbitration database must keep the same inode. Legacy PID-only locks are checked against the process command during migration.
+
+All general `/api/*` reads and writes require `X-Fleet-Token`, including state, source previews, search and activity. The first-party client obtains a capability from `GET /api/bootstrap` with `X-Fleet-Bootstrap: 1`; this endpoint returns only the capability, not workspace data. Host/Origin and cross-site checks remain enforced. SSE accepts the capability header or a bootstrap-issued HttpOnly, SameSite=Strict cookie scoped to `/api/stream`; this cookie cannot authorize other endpoints. Browser/brain agent POST endpoints instead require their narrower worker-bound bearer capabilities and never gain general workspace access. This protects the browser boundary, not against another process already running as the same local user.
+
+Multi-record orchestration uses synchronous `Store.transaction()` callbacks. Changes and events are published in order only after commit; rollback discards notifications, including nested savepoint changes. Never hold these transactions across an `await` or use raw `BEGIN`/`COMMIT` around Store methods.
+
 ## Verification
+
+### Required CI checks
+
+`.github/workflows/core.yml` runs `npm ci` and `npm run check` on macOS and Linux for pushes and pull requests. macOS also runs isolated Electron brain and native-browser smoke tests; Linux is a core portability check, not a supported desktop release. The existing Windows workflow retains its native tests, installer build and branding/package verification, and runs the API capability, daemon lock and transaction regressions.
+
+Configure branch protection/rulesets to require all three job checks: **Core (ubuntu-latest)**, **Core (macos-latest)** and **windows**. Workflow files alone do not enable required branch protection; a green Windows job is not cross-platform verification. Native Windows/macOS results must come from those runners, not inferred from Linux or from fixture tests on another OS.
 
 ### Project browser
 

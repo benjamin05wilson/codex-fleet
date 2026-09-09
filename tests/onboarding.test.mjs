@@ -1,3 +1,4 @@
+import { fleetFetch } from "./helpers/http.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
@@ -41,7 +42,7 @@ test("onboarding API requires CSRF, explicit consent and valid defaults; saving 
   const { app, root } = await fixture(t);
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${app.server.address().port}/api`;
-  const state = await fetch(base + "/state").then((r) => r.json());
+  const state = await fleetFetch(base + "/state").then((r) => r.json());
   assert.equal(state.onboarding, null);
   const post = (value, token = state.csrf) =>
     fetch(base + "/onboarding", {
