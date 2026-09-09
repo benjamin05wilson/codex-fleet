@@ -1650,6 +1650,27 @@ function RunDetail({
                   <pre className="context-preview">
                     {context?.text || "No context preview available."}
                   </pre>
+                  {events.some((e) => e.type === "brain.retrieved") && (
+                    <>
+                      <h3>Brain lookups during this chat</h3>
+                      <ul>
+                        {events
+                          .filter((e) => e.type === "brain.retrieved")
+                          .slice(-10)
+                          .map((e) => (
+                            <li key={e.seq}>
+                              {e.data.action === "read" ? "Read" : "Searched"}:{" "}
+                              {(e.data.notes || [])
+                                .map(
+                                  (n) =>
+                                    `${n.filename} (lines ${n.startLine}–${n.endLine})`,
+                                )
+                                .join(", ") || "No matching notes"}
+                            </li>
+                          ))}
+                      </ul>
+                    </>
+                  )}
                   <Button onClick={() => setTab("events")} icon={Activity}>
                     Execution history
                   </Button>
@@ -1697,6 +1718,7 @@ function eventTitle(e) {
     "brain.refreshed": "Project brain refreshed",
     "project.added": "Repository connected",
     "brain.note.saved": "Note saved",
+    "brain.retrieved": "Brain knowledge retrieved",
     "sentinel.finding": "Security observation",
     "sentinel.resolved": "Security decision recorded",
     "validation.started": "Validation started",

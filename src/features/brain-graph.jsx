@@ -1,5 +1,15 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useGraphMotion } from "./brain-motion.js";
+import { defaultForces } from "./brain-layout.js";
+import { useNoteLayout } from "./brain-layout-hook.js";
+export { layoutNotes } from "./brain-layout.js";
 import {
   Focus,
   Minus,
@@ -23,7 +33,7 @@ export const noteKind = (note) =>
         : "human";
 
 export function buildNoteGraph(notes) {
-  const nodes = notes.slice(0, 250).map((note) => ({
+  const nodes = notes.slice(0, 500).map((note) => ({
     ...note,
     id: note.filename,
     kind: noteKind(note),
@@ -51,79 +61,7 @@ export function buildNoteGraph(notes) {
   return { nodes, edges, omitted: Math.max(0, notes.length - nodes.length) };
 }
 
-const defaultForces = { center: 1, repel: 1, link: 1, distance: 190 };
 const defaultDisplay = { nodeSize: 1, linkWidth: 1, fade: 0 };
-
-export function layoutNotes(graph, forces = defaultForces) {
-  if (!graph.nodes.length) return [];
-  // Deterministic starting positions; every node is free to settle. There is
-  // no special root in a note graph, including the vault's Home note.
-  const hub = [...graph.nodes].sort(
-    (a, b) =>
-      b.degree - a.degree ||
-      (a.id === "Home.md"
-        ? -1
-        : b.id === "Home.md"
-          ? 1
-          : a.id.localeCompare(b.id)),
-  )[0];
-  const others = graph.nodes.filter((n) => n.id !== hub.id);
-  const nodes = graph.nodes.map((n) => {
-    const i = others.findIndex((p) => p.id === n.id);
-    const angle = -Math.PI / 2 + (i * Math.PI * 2) / Math.max(1, others.length);
-    const radius = 210 + Math.floor(i / 12) * 80;
-    return {
-      ...n,
-      x: n.id === hub.id ? 500 : 500 + Math.cos(angle) * radius,
-      y: n.id === hub.id ? 350 : 350 + Math.sin(angle) * radius,
-    };
-  });
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const index = new Map(nodes.map((n, i) => [n.id, i]));
-  for (let step = 0; step < 220; step++) {
-    const force = nodes.map(() => ({ x: 0, y: 0 }));
-    for (let i = 0; i < nodes.length; i++)
-      for (let j = i + 1; j < nodes.length; j++) {
-        const dx = nodes[i].x - nodes[j].x,
-          dy = nodes[i].y - nodes[j].y;
-        const d = Math.max(1, Math.hypot(dx, dy));
-        const labelSpace = Math.min(
-          180,
-          65 + Math.max(nodes[i].title.length, nodes[j].title.length) * 4,
-        );
-        const collision =
-          Math.abs(dy) < 55 ? Math.max(0, labelSpace - Math.abs(dx)) * 0.06 : 0;
-        const strength = (6500 * forces.repel) / (d * d) + collision;
-        force[i].x += (dx / d) * strength;
-        force[i].y += (dy / d) * strength;
-        force[j].x -= (dx / d) * strength;
-        force[j].y -= (dy / d) * strength;
-      }
-    for (const edge of graph.edges) {
-      const a = byId.get(edge.source),
-        b = byId.get(edge.target);
-      const dx = b.x - a.x,
-        dy = b.y - a.y,
-        d = Math.max(1, Math.hypot(dx, dy));
-      const pull = (d - forces.distance) * 0.018 * forces.link;
-      force[index.get(a.id)].x += (dx / d) * pull;
-      force[index.get(a.id)].y += (dy / d) * pull;
-      force[index.get(b.id)].x -= (dx / d) * pull;
-      force[index.get(b.id)].y -= (dy / d) * pull;
-    }
-    nodes.forEach((n, i) => {
-      n.x += Math.max(
-        -7,
-        Math.min(7, force[i].x + (500 - n.x) * 0.001 * forces.center),
-      );
-      n.y += Math.max(
-        -7,
-        Math.min(7, force[i].y + (350 - n.y) * 0.001 * forces.center),
-      );
-    });
-  }
-  return nodes;
-}
 
 export function fitNoteGraph(points, width = 1000, height = 700) {
   if (!points.length) return { x: 0, y: 0, zoom: 1 };
@@ -174,16 +112,53 @@ export function BrainGraph({ notes, selected, onSelect, query, onQuery }) {
   const [groups, setGroups] = useState(false);
   const [orphans, setOrphans] = useState(true);
   const graph = useMemo(() => buildNoteGraph(notes), [notes]);
-  const positions = useMemo(() => layoutNotes(graph, forces), [graph, forces]);
+  const {
+    positions,
+    motionGraph,
+    motionLayout,
+    pending,
+    error: layoutError,
+  } = useNoteLayout(graph, forces);
   const [camera, setCamera] = useState(() => initialNoteGraph(positions));
   const [local, setLocal] = useState(false),
     [kind, setKind] = useState("all"),
     [hover, setHover] = useState(null);
-  const motion = useGraphMotion(graph, positions, forces);
+  const nodeElements = useRef(new Map()),
+    edgeElements = useRef(new Map());
+  const paint = useCallback((points) => {
+    for (const [id, element] of nodeElements.current) {
+      const p = points.get(id);
+      if (p) element.setAttribute("transform", `translate(${p.x} ${p.y})`);
+    }
+    for (const { element, source, target } of edgeElements.current.values()) {
+      const a = points.get(source),
+        b = points.get(target);
+      if (!a || !b) continue;
+      element.setAttribute("x1", a.x);
+      element.setAttribute("y1", a.y);
+      element.setAttribute("x2", b.x);
+      element.setAttribute("y2", b.y);
+    }
+  }, []);
+  const motion = useGraphMotion(motionGraph, motionLayout, forces, paint);
+  useLayoutEffect(() => paint(motion.currentPoints()));
   const gesture = useRef(null),
     svg = useRef(null);
   const [viewport, setViewport] = useState({ width: 1000, height: 700 });
   const initialViewportMeasured = useRef(false);
+  const positionsRef = useRef(positions);
+  positionsRef.current = positions;
+  const [resetFrame, setResetFrame] = useState(0);
+  const framed = useRef(null);
+  useEffect(() => {
+    if (pending || !positions.length) return;
+    // Frame a newly loaded graph once; selecting/searching must not reset zoom.
+    const key = positions.map((n) => n.id).join("\0") + resetFrame;
+    if (key !== framed.current) {
+      framed.current = key;
+      setCamera(initialNoteGraph(positions, viewport.width, viewport.height));
+    }
+  }, [positions, pending, resetFrame, viewport]);
   useEffect(() => {
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(([entry]) => {
@@ -192,7 +167,7 @@ export function BrainGraph({ notes, selected, onSelect, query, onQuery }) {
         setViewport({ width, height });
         if (!initialViewportMeasured.current) {
           initialViewportMeasured.current = true;
-          setCamera(initialNoteGraph(positions, width, height));
+          setCamera(initialNoteGraph(positionsRef.current, width, height));
         }
       }
     });
@@ -206,22 +181,36 @@ export function BrainGraph({ notes, selected, onSelect, query, onQuery }) {
         e.source === id ? [e.target] : e.target === id ? [e.source] : [],
       ),
     ]);
-  const nearby = connected(selected),
-    highlighted = connected(hover);
-  const visible = positions.filter(
-    (n) =>
-      (!local || nearby.has(n.id)) &&
-      (orphans || n.degree > 0) &&
-      (kind === "all" || kind === n.kind) &&
-      (!query ||
-        `${n.title} ${n.content}`.toLowerCase().includes(query.toLowerCase())),
+  const nearby = useMemo(() => connected(selected), [graph, selected]),
+    highlighted = useMemo(() => connected(hover), [graph, hover]);
+  const searchText = useMemo(
+    () =>
+      new Map(
+        positions.map((n) => [
+          n.id,
+          `${n.title} ${n.content || ""}`.toLowerCase(),
+        ]),
+      ),
+    [positions],
   );
-  const ids = new Set(visible.map((n) => n.id));
+  const visible = useMemo(
+    () =>
+      positions.filter(
+        (n) =>
+          (!local || nearby.has(n.id)) &&
+          (orphans || n.degree > 0) &&
+          (kind === "all" || kind === n.kind) &&
+          (!query || searchText.get(n.id).includes(query.toLowerCase())),
+      ),
+    [positions, local, nearby, orphans, kind, query, searchText],
+  );
+  const ids = useMemo(() => new Set(visible.map((n) => n.id)), [visible]);
   const byId = new Map(
     positions.map((n) => [n.id, { ...n, ...motion.points.get(n.id) }]),
   );
-  const edges = graph.edges.filter(
-    (e) => ids.has(e.source) && ids.has(e.target),
+  const edges = useMemo(
+    () => graph.edges.filter((e) => ids.has(e.source) && ids.has(e.target)),
+    [graph, ids],
   );
   const zoom = (factor) =>
     setCamera((c) => ({
@@ -231,7 +220,7 @@ export function BrainGraph({ notes, selected, onSelect, query, onQuery }) {
   const fit = () =>
     setCamera(
       fitNoteGraph(
-        visible.map((n) => byId.get(n.id)),
+        visible.map((n) => motion.currentPoints().get(n.id) || n),
         viewport.width,
         viewport.height,
       ),
@@ -285,13 +274,7 @@ export function BrainGraph({ notes, selected, onSelect, query, onQuery }) {
                   setKind("all");
                   onQuery("");
                   motion.replay();
-                  setCamera(
-                    initialNoteGraph(
-                      layoutNotes(graph),
-                      viewport.width,
-                      viewport.height,
-                    ),
-                  );
+                  setResetFrame((n) => n + 1);
                 }}
               >
                 <RotateCcw size={14} />
@@ -491,7 +474,7 @@ export function BrainGraph({ notes, selected, onSelect, query, onQuery }) {
             start,
             id,
             camera,
-            origin: id ? byId.get(id) : null,
+            origin: id ? motion.currentPoints().get(id) || byId.get(id) : null,
             distance: 0,
           };
           e.currentTarget.setPointerCapture(e.pointerId);
@@ -537,6 +520,11 @@ export function BrainGraph({ notes, selected, onSelect, query, onQuery }) {
             return (
               <line
                 key={`${e.source}-${e.target}`}
+                ref={(element) => {
+                  const key = `${e.source}\0${e.target}`;
+                  if (element) edgeElements.current.set(key, { element, ...e });
+                  else edgeElements.current.delete(key);
+                }}
                 x1={a.x}
                 y1={a.y}
                 x2={b.x}
@@ -556,6 +544,10 @@ export function BrainGraph({ notes, selected, onSelect, query, onQuery }) {
             return (
               <g
                 key={n.id}
+                ref={(element) => {
+                  if (element) nodeElements.current.set(n.id, element);
+                  else nodeElements.current.delete(n.id);
+                }}
                 data-note={n.id}
                 className={`graph-node ${n.kind} ${n.pending ? "pending" : ""} ${selected === n.id ? "selected" : ""} ${n.stale ? "stale" : ""} ${highlighted.has(n.id) ? "connected" : ""}`}
                 transform={`translate(${n.x} ${n.y})`}
@@ -599,9 +591,12 @@ export function BrainGraph({ notes, selected, onSelect, query, onQuery }) {
       </svg>
       {!visible.length && (
         <p className="graph-empty">
-          {notes.length
-            ? "No notes match these filters."
-            : "Your graph will grow as notes and session receipts are written."}
+          {layoutError ||
+            (pending
+              ? "Arranging graph…"
+              : notes.length
+                ? "No notes match these filters."
+                : "Your graph will grow as notes and session receipts are written.")}
         </p>
       )}
       <div className="graph-camera">

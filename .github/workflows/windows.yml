@@ -20,10 +20,11 @@ jobs:
       - run: git config --global user.email "fleet-ci@example.invalid"
       - run: npm run test:windows
       - run: node --test tests/auth.test.mjs tests/windows-branding.test.mjs tests/desktop.test.mjs
-      - run: node --test --test-timeout=90000 tests/brain-index.test.mjs tests/workspace-files.test.mjs tests/worker-lifecycle.test.mjs tests/terminal-lifecycle.test.mjs tests/focused.test.mjs tests/teams.test.mjs tests/shutdown.test.mjs tests/workspace.test.mjs
+      - run: node --test --test-timeout=90000 tests/brain-index.test.mjs tests/brain-writer.test.mjs tests/brain-wiki.test.mjs tests/brain-retrieval.test.mjs tests/workspace-files.test.mjs tests/worker-lifecycle.test.mjs tests/terminal-lifecycle.test.mjs tests/focused.test.mjs tests/teams.test.mjs tests/shutdown.test.mjs tests/workspace.test.mjs
       - run: npm run test:ui
       - run: npm run build
       - run: node tests/live-brain.mjs --run
+      - run: node tests/live-brain.mjs --run --large
       - run: node tests/live-native-browser.mjs --run --ui --shared --auto-open --full-app
       - run: npm run desktop:package:win
       - run: node scripts/verify-windows-package.mjs

@@ -4,13 +4,19 @@ import { realpath, lstat } from "node:fs/promises";
 import { git, safeRead } from "./git.mjs";
 import { searchablePath } from "./search.mjs";
 import { redact } from "./sentinel.mjs";
+import { documentNotes, documentName } from "./brain-documents.mjs";
 
 export const brainLimits = {
   files: 500,
   bytes: 4_000_000,
   fileBytes: 80_000,
+  documents: 1500,
+  documentBytes: 32_000_000,
+  documentFileBytes: 512_000,
   worktrees: 20,
 };
+export const isDocument = (path) =>
+  /\.(?:md|mdx)$/i.test(path) || /(?:^|\/)README$/i.test(path);
 export const digest = (value) =>
   createHash("sha256").update(value).digest("hex");
 export const knowledgeFingerprint = (content) =>
@@ -172,12 +178,7 @@ export async function capture(root, { revision, previous } = {}) {
             size: Number(size),
           };
         })
-        .filter(
-          (f) =>
-            f.type === "blob" &&
-            f.mode !== "120000" &&
-            f.size <= brainLimits.fileBytes,
-        )
+        .filter((f) => f.type === "blob" && f.mode !== "120000")
     : [
         ...new Set(
           (
@@ -193,20 +194,115 @@ export async function capture(root, { revision, previous } = {}) {
             .filter(Boolean),
         ),
       ].map((path) => ({ path }));
+  const changedPaths = new Set(),
+    deletedPaths = new Set();
+  if (previous?.head && previous.head !== head) {
+    for (const path of (
+      await git(root, [
+        "diff",
+        "--no-ext-diff",
+        "--no-renames",
+        "--name-only",
+        "-z",
+        previous.head,
+        head,
+      ])
+    )
+      .split("\0")
+      .filter(Boolean))
+      changedPaths.add(path);
+  }
+  if (!revision) {
+    const status = (
+      await git(root, [
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+      ])
+    ).split("\0");
+    for (let i = 0; i < status.length; i++) {
+      if (!status[i]) continue;
+      const flags = status[i].slice(0, 2),
+        path = status[i].slice(3);
+      changedPaths.add(path);
+      if (flags.includes("D")) deletedPaths.add(path);
+      if (/[RC]/.test(flags)) i++;
+    }
+  }
+  // Keep recently changed evidence in the next stable snapshot too; otherwise
+  // a just-committed feature can fall out of the budget on the following poll.
+  const priorityPaths = [
+    ...new Set([...changedPaths, ...(previous?.priorityPaths || [])]),
+  ]
+    .filter((path) => indexable(path) && !isDocument(path))
+    .slice(0, brainLimits.files);
+  const priorities = new Map(priorityPaths.map((path, rank) => [path, rank]));
   const candidates = tree
-    .filter((f) => indexable(f.path))
+    .filter((f) => indexable(f.path) && !deletedPaths.has(f.path))
     .sort(
       (a, b) =>
         Number(!/(README|package\.json|AGENTS|\.toml$)/i.test(a.path)) -
           Number(!/(README|package\.json|AGENTS|\.toml$)/i.test(b.path)) ||
         a.path.localeCompare(b.path),
     );
+  const documents = candidates
+    .filter((f) => isDocument(f.path))
+    .sort(
+      (a, b) =>
+        Number(!/(?:^|\/)wiki\//i.test(a.path)) -
+          Number(!/(?:^|\/)wiki\//i.test(b.path)) ||
+        a.path.localeCompare(b.path),
+    );
+  const code = candidates.filter((f) => !isDocument(f.path));
+  const coverage = {
+    documents: { total: documents.length, indexed: 0, skipped: 0 },
+    wiki: {
+      total: documents.filter((f) => /(?:^|\/)wiki\//i.test(f.path)).length,
+      indexed: 0,
+    },
+    code: { total: code.length, indexed: 0, skipped: 0 },
+    excluded: tree.length - candidates.length,
+    omissions: [],
+  };
   const files = {};
+  const referencedPaths = new Set();
+  function* ordered() {
+    yield* documents;
+    // Once documentation is read, spend the code budget on its cited files first.
+    code.sort(
+      (a, b) =>
+        (priorities.get(a.path) ?? brainLimits.files) -
+          (priorities.get(b.path) ?? brainLimits.files) ||
+        Number(!referencedPaths.has(a.path)) -
+          Number(!referencedPaths.has(b.path)),
+    );
+    yield* code;
+  }
   let bytes = 0,
-    skipped = tree.length - candidates.length;
-  for (const file of candidates.slice(0, brainLimits.files)) {
-    if (bytes >= brainLimits.bytes) {
-      skipped++;
+    documentBytes = 0,
+    codeBytes = 0;
+  const omit = (file, reason) => {
+    coverage[isDocument(file.path) ? "documents" : "code"].skipped++;
+    if (coverage.omissions.length < 100)
+      coverage.omissions.push({ path: file.path, reason });
+  };
+  // Documentation has an independent budget. Code can never crowd out a wiki.
+  for (const file of ordered()) {
+    const document = isDocument(file.path);
+    const bucket = document ? coverage.documents : coverage.code;
+    const fileLimit = document
+      ? brainLimits.documentFileBytes
+      : brainLimits.fileBytes;
+    const byteLimit = document ? brainLimits.documentBytes : brainLimits.bytes;
+    if (
+      bucket.indexed >= (document ? brainLimits.documents : brainLimits.files)
+    ) {
+      omit(file, "file budget");
+      continue;
+    }
+    if (file.size > fileLimit) {
+      omit(file, "file too large");
       continue;
     }
     let raw;
@@ -218,7 +314,7 @@ export async function capture(root, { revision, previous } = {}) {
           "/",
         );
         if (!indexable(rel) || rel.startsWith("../")) {
-          skipped++;
+          omit(file, "excluded or outside project");
           continue;
         }
         let cursor = root,
@@ -231,7 +327,7 @@ export async function capture(root, { revision, previous } = {}) {
           }
         }
         if (linked) {
-          skipped++;
+          omit(file, "symlink");
           continue;
         }
       }
@@ -239,22 +335,42 @@ export async function capture(root, { revision, previous } = {}) {
         ? previous?.files[file.path]?.object === file.object
           ? previous.files[file.path].text
           : await git(root, ["cat-file", "blob", file.object])
-        : await safeRead(root, file.path, brainLimits.fileBytes);
+        : await safeRead(root, file.path, fileLimit);
     } catch (error) {
-      if (error.code === "ENOENT") continue;
+      if (error.code === "ENOENT") {
+        omit(file, "missing file");
+        continue;
+      }
       throw error;
     }
     if (
       raw === null ||
       raw.includes("\0") ||
-      Buffer.byteLength(raw) + bytes > brainLimits.bytes
+      Buffer.byteLength(raw) + (document ? documentBytes : codeBytes) >
+        byteLimit
     ) {
-      skipped++;
+      omit(
+        file,
+        raw === null
+          ? "file too large"
+          : raw.includes("\0")
+            ? "binary"
+            : "byte budget",
+      );
       continue;
     }
     bytes += Buffer.byteLength(raw);
+    if (document) documentBytes += Buffer.byteLength(raw);
+    else codeBytes += Buffer.byteLength(raw);
+    bucket.indexed++;
+    if (document && /(?:^|\/)wiki\//i.test(file.path)) coverage.wiki.indexed++;
     const text = redact(raw),
       hash = digest(text);
+    if (document)
+      for (const match of text.matchAll(
+        /[a-zA-Z0-9_./@-]+\.(?:[cm]?[jt]sx?|py|rs|go|java|kt|cs|rb|php|swift|sql|ya?ml|json)\b/g,
+      ))
+        referencedPaths.add(match[0].replace(/^\.\//, ""));
     files[file.path] =
       previous?.files[file.path]?.hash === hash
         ? { ...previous.files[file.path], object: file.object || null }
@@ -265,18 +381,27 @@ export async function capture(root, { revision, previous } = {}) {
             ...facts(file.path, text),
           };
   }
-  skipped += Math.max(0, candidates.length - brainLimits.files);
+  const skipped =
+    coverage.excluded + coverage.documents.skipped + coverage.code.skipped;
   const snapshot = digest(
-    JSON.stringify([head, Object.entries(files).map(([p, f]) => [p, f.hash])]),
+    JSON.stringify([
+      3,
+      head,
+      coverage,
+      candidates.map((f) => f.path),
+      Object.entries(files).map(([p, f]) => [p, f.hash]),
+    ]),
   );
   return {
     head,
+    priorityPaths,
+    manifest: candidates.map((f) => f.path),
     snapshot,
     files,
     skipped,
     bytes,
-    truncated:
-      candidates.length > brainLimits.files || bytes >= brainLimits.bytes,
+    coverage,
+    truncated: coverage.documents.skipped > 0 || coverage.code.skipped > 0,
     capturedAt,
   };
 }
@@ -347,13 +472,14 @@ export async function worktrees(project) {
   return result.filter((w) => !w.prunable).slice(0, brainLimits.worktrees);
 }
 
-export function knowledgeNotes(index, scope, label) {
+export function knowledgeNotes(index, scope, label, insights = {}) {
   const suffix = scope === "project" ? "" : ` ${scope.slice(-8)}`;
   const title = (topic) => `Code ${topic}${suffix}`;
   const link = (topic) => `[[${title(topic)}]]`;
   const source = (path, line) => `\`${clean(path)}${line ? `:${line}` : ""}\``;
   const groups = new Map();
   for (const [path, file] of Object.entries(index.files)) {
+    if (isDocument(path)) continue;
     const group = path.includes("/") ? path.split("/")[0] : "root";
     if (!groups.has(group)) groups.set(group, []);
     groups.get(group).push({ path, ...file });
@@ -468,5 +594,14 @@ export function knowledgeNotes(index, scope, label) {
       "Features",
       `## Declared interfaces\n\n${features.map((f) => `- ${link(f.topic)} — ${source(f.path, f.route.line)}`).join("\n")}\n\nAt most 24 detected endpoint declarations are shown. Dynamic routes may not be detected.`,
     );
-  return notes;
+  // A documentation hub links each full page, rather than dropping everything
+  // into a truncated collection of twelve-line excerpts.
+  const pages = documentNotes(index, scope, insights);
+  const oldDocs = notes.findIndex((n) => n.topic === "Documentation");
+  if (oldDocs >= 0) notes.splice(oldDocs, 1);
+  add(
+    "Documentation",
+    `## Imported pages\n\n${pages.map((p) => `- [[${documentName(p.sourcePath, scope)}|${p.sourcePath}]]`).join("\n")}\n\nDocumentation coverage: ${index.coverage?.documents.indexed ?? pages.length}/${index.coverage?.documents.total ?? pages.length}. Wiki coverage: ${index.coverage?.wiki.indexed ?? 0}/${index.coverage?.wiki.total ?? 0}. Original repository files are never overwritten by the brain.`,
+  );
+  return [...notes, ...pages];
 }

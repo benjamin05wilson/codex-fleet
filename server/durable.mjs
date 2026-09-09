@@ -14,6 +14,7 @@ export async function launchWorker(engine, run, prompt) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const identity = randomUUID();
   const browser = engine.browsers?.connection(run, identity) || null;
+  const brain = engine.brainTools?.connection(run, identity) || null;
   await writeFile(
     join(directory, "config.json"),
     JSON.stringify({
@@ -23,6 +24,7 @@ export async function launchWorker(engine, run, prompt) {
       prompt,
       timeoutMs: run.timeoutMs,
       browser,
+      brain,
     }),
     { mode: 0o600 },
   );
@@ -33,6 +35,7 @@ export async function launchWorker(engine, run, prompt) {
     cursor: 0,
     createdAt: Date.now(),
     persistent: true,
+    brainTools: !!brain,
     idle: false,
     model: run.model || "",
     turnCursor: 0,
@@ -273,6 +276,9 @@ export async function resumeWorker(engine, run, prompt) {
     !ownsWorker(engine, run.id, state)
   )
     return false;
+  // Upgrade an idle pre-brain worker by resuming its saved thread in a new
+  // worker. Never interrupt an active turn or pretend old workers have tools.
+  if (engine.brainTools && !run.worker.brainTools) return false;
   run = { ...run, worker: engine.store.get("run", run.id).worker };
   const attempt = run.attempt + 1;
   state.idle = false;

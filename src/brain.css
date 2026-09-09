@@ -91,6 +91,7 @@
 }
 .brain-auto-status {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 9px;
   padding: 10px 26px;
@@ -125,6 +126,22 @@
   padding: 16px;
   box-shadow: 0 12px 32px #0005;
   line-height: 1.8;
+  max-height: min(440px, 65vh);
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.brain-writer-settings label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.brain-writer-settings select {
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 4px;
 }
 .brain-auto-status > button {
   display: flex;

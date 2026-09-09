@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { EventEmitter } from "node:events";
 import { browserStartupConfig } from "../shared/browser-tools.mjs";
+import { brainStartupConfig } from "../shared/brain-tools.mjs";
 import {
   commandInvocation,
   processEnvironment,
@@ -11,16 +12,23 @@ import {
 
 // Verified against the installed 0.153.2 schema; no experimental API opt-in.
 export class CodexClient extends EventEmitter {
-  constructor(bin = "codex", cwd = process.cwd(), browser = null) {
+  constructor(
+    bin = "codex",
+    cwd = process.cwd(),
+    browser = null,
+    brain = null,
+  ) {
     super();
     this.bin = bin;
     this.cwd = cwd;
     this.browser = browser;
+    this.brain = brain;
     this.pending = new Map();
     this.sequence = 0;
   }
   async connect() {
     const browser = browserStartupConfig(this.browser);
+    const brain = brainStartupConfig(this.brain);
     const env = processEnvironment();
     const invocation = commandInvocation(this.bin, [
       "app-server",
@@ -29,11 +37,12 @@ export class CodexClient extends EventEmitter {
       "-c",
       'approval_policy="never"',
       ...browser.args,
+      ...brain.args,
     ]);
     this.child = spawn(invocation.bin, invocation.args, {
       cwd: this.cwd,
       windowsHide: true,
-      env: { ...env, ...browser.env, LANG: "en_US.UTF-8" },
+      env: { ...env, ...browser.env, ...brain.env, LANG: "en_US.UTF-8" },
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child.stdin.on("error", () => {});

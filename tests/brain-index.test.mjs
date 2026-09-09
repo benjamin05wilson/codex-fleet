@@ -15,7 +15,9 @@ import { join } from "node:path";
 import { Store } from "../server/store.mjs";
 import { Brain } from "../server/brain.mjs";
 import { git, repository } from "../server/git.mjs";
-import { scopeFor } from "../server/brain-index.mjs";
+import { scopeFor, capture, knowledgeNotes } from "../server/brain-index.mjs";
+import { documentName, resolveDocument } from "../server/brain-documents.mjs";
+import { BrainWriter } from "../server/brain-writer.mjs";
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "fleet-brain-")),
@@ -76,6 +78,197 @@ async function fixture(t) {
   await brain.refresh(project);
   return { root, source, store, project, brain, commit };
 }
+
+test("completed writer output updates only its evidence scope and preserves manually edited pages", async (t) => {
+  const { source, brain, project, store, commit } = await fixture(t);
+  await mkdir(join(source, "wiki"));
+  await writeFile(
+    join(source, "wiki/Payments.md"),
+    "# Payments\nUses src/api.js.",
+  );
+  await git(source, ["add", "-A"]);
+  await commit();
+  let calls = 0;
+  brain.writer = new BrainWriter(store, {
+    run: async (options) => {
+      calls++;
+      return {
+        text: JSON.stringify({
+          edits: [
+            {
+              sectionId:
+                options.schema.properties.edits.items.properties.sectionId
+                  .enum[0],
+              markdown:
+                "The supplied charge route is declared in `src/api.js`.",
+              sources: ["src/api.js"],
+            },
+          ],
+        }),
+        usage: {},
+      };
+    },
+    onWrite: (p) => brain.enqueue(p),
+  });
+  await brain.drain();
+  await brain.writer.drain();
+  await brain.drain();
+  assert.equal(calls, 1, "identical worktrees reuse the same writer result");
+  const name = documentName("wiki/Payments.md") + ".md";
+  let note = (await brain.list(project)).find((n) => n.filename === name);
+  assert.match(note.content, /The supplied charge route/);
+  assert.match(note.content, /Maintained by gpt-5.6-luna/);
+  assert.doesNotMatch(note.content, /Fleet auto-written analysis/);
+  await writeFile(
+    join(source, "src/api.js"),
+    "export function unpublished() {}",
+  );
+  brain.enqueue(project);
+  await brain.drain();
+  note = (await brain.list(project)).find((n) => n.filename === name);
+  assert.match(note.content, /The supplied charge route/);
+  const working = (await brain.list(project)).find(
+    (n) => n.sourcePath === "wiki/Payments.md" && n.scope !== "project",
+  );
+  assert.equal(
+    working.stale,
+    true,
+    "previous wiki content is retained but excluded from current context until reviewed",
+  );
+  await writeFile(
+    join(brain.path(project), name),
+    note.content + "\nHuman addition.",
+  );
+  await git(source, ["add", "-A"]);
+  await commit();
+  brain.enqueue(project);
+  await brain.drain();
+  assert.match(
+    await readFile(join(brain.path(project), name), "utf8"),
+    /Human addition/,
+  );
+  assert.equal(
+    await readFile(join(source, "wiki/Payments.md"), "utf8"),
+    "# Payments\nUses src/api.js.",
+  );
+  assert.ok(
+    (await brain.list(project, { scope: "project" })).every(
+      (n) => n.scope === "project",
+    ),
+  );
+});
+
+test("wiki pages have independent coverage, full content and scope-local links despite code overflow", async (t) => {
+  const { source, brain, project, commit } = await fixture(t);
+  await mkdir(join(source, "aaa"));
+  for (let i = 0; i < 510; i++)
+    await writeFile(
+      join(source, "aaa", `${i}.js`),
+      `export const n${i} = ${i};`,
+    );
+  await mkdir(join(source, "wiki", "features"), { recursive: true });
+  const long =
+    "# Charge\n\n" +
+    "Detailed source documentation.\n".repeat(7000) +
+    "\nEND_OF_PAGE\n[[Home#Overview|Overview]]\n[Guide](../Home.md)\n";
+  await writeFile(join(source, "wiki", "features", "Charge.md"), long);
+  await writeFile(
+    join(source, "wiki", "Home.md"),
+    "# Wiki home\n[[features/Charge|Payments]]\n",
+  );
+  await git(source, ["add", "-A"]);
+  await commit();
+  await brain.drain();
+  const notes = await brain.list(project),
+    page = notes.find(
+      (n) => n.filename === documentName("wiki/features/Charge.md") + ".md",
+    );
+  assert.match(page.content, /END_OF_PAGE/);
+  assert.ok(page.links.some((l) => l.startsWith(documentName("wiki/Home.md"))));
+  assert.equal(brain.status(project).status, "partial");
+  assert.deepEqual(
+    brain.scopes(project).find((s) => s.scope === "project").coverage.wiki,
+    { total: 2, indexed: 2 },
+  );
+  const index = await capture(source);
+  const scoped = knowledgeNotes(index, "worktree-12345678", "feature");
+  assert.ok(
+    scoped
+      .find((n) => n.sourcePath === "wiki/features/Charge.md")
+      .content.includes(documentName("wiki/Home.md", "worktree-12345678")),
+  );
+  assert.equal(
+    await readFile(join(source, "wiki/features/Charge.md"), "utf8"),
+    long,
+  );
+  assert.equal(
+    resolveDocument("wiki/Home.md", "Same", [
+      "wiki/a/Same.md",
+      "wiki/b/Same.md",
+    ]),
+    null,
+  );
+  assert.equal(
+    resolveDocument("wiki/Home.md", "a/Same", [
+      "wiki/a/Same.md",
+      "wiki/b/Same.md",
+    ]),
+    "wiki/a/Same.md",
+  );
+  await writeFile(
+    join(source, "zzz-new-feature.js"),
+    "export function newFeature() {}",
+  );
+  const dirty = await capture(source, { previous: index });
+  assert.ok(
+    dirty.files["zzz-new-feature.js"],
+    "new code takes priority over a saturated old inventory",
+  );
+  await git(source, ["add", "-A"]);
+  await commit();
+  const committed = await capture(source, {
+    revision: (await git(source, ["rev-parse", "HEAD"])).trim(),
+    previous: index,
+  });
+  assert.ok(committed.files["zzz-new-feature.js"]);
+  const stable = await capture(source, {
+    revision: committed.head,
+    previous: committed,
+  });
+  assert.ok(
+    stable.files["zzz-new-feature.js"],
+    "priority survives the next unchanged snapshot",
+  );
+  await rm(join(source, "zzz-new-feature.js"));
+  const deleted = await capture(source, { previous: dirty });
+  assert.ok(
+    !deleted.manifest.includes("zzz-new-feature.js"),
+    "unstaged deletion is not mistaken for a reading-budget omission",
+  );
+});
+
+test("renamed and deleted documentation retires old nodes without deleting source or human notes", async (t) => {
+  const { source, brain, project, commit } = await fixture(t);
+  await mkdir(join(source, "wiki"));
+  await writeFile(join(source, "wiki/Old.md"), "# Old\nUnchanged knowledge.");
+  await git(source, ["add", "-A"]);
+  await commit();
+  await brain.drain();
+  await rename(join(source, "wiki/Old.md"), join(source, "wiki/New.md"));
+  await git(source, ["add", "-A"]);
+  await commit();
+  brain.enqueue(project);
+  await brain.drain();
+  let notes = await brain.list(project);
+  assert.ok(!notes.some((n) => n.sourcePath === "wiki/Old.md"));
+  assert.ok(notes.some((n) => n.sourcePath === "wiki/New.md"));
+  await rm(join(source, "wiki/New.md"));
+  await commit();
+  brain.enqueue(project);
+  await brain.drain();
+  notes = await brain.list(project);
+  assert.ok(!notes.some((n) => n.sourcePath === "wiki/New.md"));
+});
 
 test("import builds linked code knowledge with evidence and excludes secrets, generated files and symlinks", async (t) => {
   const { root, source, brain, project, store } = await fixture(t);

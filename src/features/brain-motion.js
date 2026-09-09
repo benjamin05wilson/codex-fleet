@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 // Fleet's own small, bounded force simulation. No continuously running timer:
 // each interaction reheats it, and a settled/hidden graph stops scheduling frames.
@@ -101,7 +101,7 @@ export function tickMotion(model, forces) {
   return model.ticks < 300 && model.alpha > 0.012;
 }
 
-export function useGraphMotion(graph, layout, forces) {
+export function useGraphMotion(graph, layout, forces, onFrame) {
   const [reduced, setReduced] = useState(
     () =>
       typeof window.matchMedia !== "function" ||
@@ -116,7 +116,16 @@ export function useGraphMotion(graph, layout, forces) {
         ]),
       ),
   );
-  const [running, setRunning] = useState(false);
+  const [running, setRunningState] = useState(false);
+  const runningRef = useRef(false);
+  const setRunning = useCallback((value) => {
+    if (runningRef.current === value) return;
+    runningRef.current = value;
+    setRunningState(value);
+  }, []);
+  const livePoints = useRef(points);
+  const frameCallback = useRef(onFrame);
+  frameCallback.current = onFrame;
   const [replayCount, setReplayCount] = useState(0);
   const [paused, setPaused] = useState(false);
   const model = useRef(null),
@@ -144,8 +153,14 @@ export function useGraphMotion(graph, layout, forces) {
       lastTime = null,
       elapsed = 0,
       active = !reduced && !paused && sim.nodes.length > 1;
-    const draw = () =>
-      setPoints(new Map(sim.nodes.map((n) => [n.id, { x: n.x, y: n.y }])));
+    const draw = () => {
+      const next = new Map(sim.nodes.map((n) => [n.id, { x: n.x, y: n.y }]));
+      livePoints.current = next;
+      // SVG consumers paint coordinates directly; controls/labels stay in React.
+      // Other consumers retain the state-based interface.
+      if (frameCallback.current) frameCallback.current(next);
+      else setPoints(next);
+    };
     publish.current = draw;
     draw();
     const schedule = () => {
@@ -195,7 +210,8 @@ export function useGraphMotion(graph, layout, forces) {
     };
   }, [graph, layout, forces, reduced, replayCount, paused]);
   return {
-    points,
+    points: onFrame ? livePoints.current : points,
+    currentPoints: () => livePoints.current,
     running,
     reduced,
     replay: () => {

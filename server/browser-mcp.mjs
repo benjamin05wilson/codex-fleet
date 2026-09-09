@@ -10,6 +10,8 @@ export function serveBrowserMcp({
   url = process.env.FLEET_BROWSER_URL,
   capability = process.env.FLEET_BROWSER_CAPABILITY,
   timeoutMs = 85000,
+  tool = browserTool,
+  serverName = "fleet-browser",
 } = {}) {
   const pending = new Map();
   let closed = false;
@@ -49,14 +51,11 @@ export function serveBrowserMcp({
       return reply({
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "fleet-browser", version: "0.1.0" },
+        serverInfo: { name: serverName, version: "0.1.0" },
       });
     if (request.method === "ping") return reply({});
-    if (request.method === "tools/list") return reply({ tools: [browserTool] });
-    if (
-      request.method !== "tools/call" ||
-      request.params?.name !== browserTool.name
-    )
+    if (request.method === "tools/list") return reply({ tools: [tool] });
+    if (request.method !== "tools/call" || request.params?.name !== tool.name)
       return send({
         jsonrpc: "2.0",
         id: request.id,

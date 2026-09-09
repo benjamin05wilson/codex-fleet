@@ -15,6 +15,11 @@ import { CodexClient, sandboxPolicy } from "./codex-client.mjs";
 import { redactValue, redact } from "./sentinel.mjs";
 import { validatePermissions } from "../shared/permissions.mjs";
 import {
+  brainMcpConfig,
+  brainInstructions,
+  verifyBrainTool,
+} from "../shared/brain-tools.mjs";
+import {
   browserMcpConfig,
   browserInstructions,
   verifyBrowserTool,
@@ -35,7 +40,12 @@ let seq = 0,
   deadline;
 let currentRun = config.run;
 let bootstrapping = true;
-let client = new CodexClient(config.bin, config.run.worktree, config.browser);
+let client = new CodexClient(
+  config.bin,
+  config.run.worktree,
+  config.browser,
+  config.brain,
+);
 const append = (event) =>
   appendFileSync(
     join(directory, "events.jsonl"),
@@ -223,7 +233,12 @@ const replaceClient = () => {
   const previous = client;
   previous.removeAllListeners();
   previous.close();
-  client = new CodexClient(config.bin, config.run.worktree, config.browser);
+  client = new CodexClient(
+    config.bin,
+    config.run.worktree,
+    config.browser,
+    config.brain,
+  );
   bindClient(client);
 };
 bindClient(client);
@@ -231,10 +246,14 @@ const optionsFor = (run) => ({
   cwd: run.worktree,
   approvalPolicy: "never",
   sandbox: validatePermissions(run),
-  developerInstructions: browserInstructions(!!config.browser),
+  developerInstructions:
+    browserInstructions(!!config.browser) +
+    "\n\n" +
+    brainInstructions(!!config.brain),
   ...(run.model ? { model: run.model } : {}),
   config: {
     ...browserMcpConfig(config.browser).config,
+    ...brainMcpConfig(config.brain).config,
     // This is a Fleet-worker override, not a change to the user's Codex config.
     // Desktop automation must not close/reconfigure Fleet to imitate browsing.
     "mcp_servers.cua_repl": {
@@ -319,6 +338,10 @@ const bootstrap = async () => {
       },
     );
     const nextThreadId = result.thread.id;
+    if (config.brain) {
+      append({ type: "worker.phase", phase: "Connecting project brain" });
+      await verifyBrainTool(client, nextThreadId);
+    }
     if (config.browser) {
       append({ type: "worker.phase", phase: "Connecting project browser" });
       await verifyBrowserTool(client, nextThreadId);

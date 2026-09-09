@@ -23,7 +23,8 @@ import {
 } from "../src/features/onboarding.jsx";
 import { Preview } from "../src/features/preview.jsx";
 import { HomePage } from "../src/features/home.jsx";
-import { BrainView } from "../src/features/brain.jsx";
+import { BrainView, reconcileBrain } from "../src/features/brain.jsx";
+import { useNoteLayout } from "../src/features/brain-layout-hook.js";
 import {
   buildFileTree,
   CodeExplorer,
@@ -52,6 +53,120 @@ import {
 } from "../src/features/workspace.jsx";
 
 // Component interaction tests; these do not claim to replace visual browser QA.
+test("brain refresh preserves unchanged note identity, including wiki metadata", () => {
+  const original = {
+    notes: [
+      {
+        filename: "Wiki.md",
+        content: "long markdown".repeat(10000),
+        links: ["Home"],
+        maintenance: { status: "current" },
+      },
+    ],
+    writer: { status: "idle" },
+  };
+  expect(reconcileBrain(original, structuredClone(original))).toBe(original);
+  const status = structuredClone(original);
+  status.writer.status = "running";
+  expect(reconcileBrain(original, status).notes).toBe(original.notes);
+  const update = structuredClone(original);
+  update.notes[0].content = "updated wiki";
+  expect(reconcileBrain(original, update).notes[0]).toBe(update.notes[0]);
+  const removed = reconcileBrain(original, { ...original, notes: [] });
+  expect(removed.notes).toHaveLength(0);
+});
+
+test("large layouts use a body-free worker, reuse topology and discard superseded results", async () => {
+  const workers = [];
+  vi.stubGlobal(
+    "Worker",
+    class {
+      constructor() {
+        workers.push(this);
+      }
+      postMessage = vi.fn();
+      terminate = vi.fn();
+    },
+  );
+  const graph = buildNoteGraph(
+    Array.from({ length: 500 }, (_, i) => ({
+      filename: `Note-${i}.md`,
+      title: `Note ${i}`,
+      content: "private wiki body",
+      links: [],
+    })),
+  );
+  const forces = { center: 1, repel: 1, link: 1, distance: 190 };
+  const view = renderHook(({ graph, forces }) => useNoteLayout(graph, forces), {
+    initialProps: { graph, forces },
+  });
+  expect(view.result.current.pending).toBe(true);
+  expect(view.result.current.positions).toEqual([]);
+  expect(workers).toHaveLength(1);
+  expect(JSON.stringify(workers[0].postMessage.mock.calls)).not.toContain(
+    "private wiki body",
+  );
+  const points = graph.nodes.map((n, i) => ({ id: n.id, x: i, y: i }));
+  await reactAct(() => workers[0].onmessage({ data: points }));
+  expect(view.result.current.positions).toHaveLength(500);
+  const motionGraph = view.result.current.motionGraph;
+  const motionLayout = view.result.current.motionLayout;
+  view.rerender({
+    graph: {
+      ...graph,
+      nodes: graph.nodes.map((n) => ({ ...n, content: "new text" })),
+    },
+    forces,
+  });
+  expect(workers).toHaveLength(1);
+  expect(view.result.current.positions[0].content).toBe("new text");
+  expect(view.result.current.motionGraph).toBe(motionGraph);
+  expect(view.result.current.motionLayout).toBe(motionLayout);
+  view.rerender({ graph, forces: { ...forces, repel: 2 } });
+  expect(workers).toHaveLength(2);
+  expect(workers[0].terminate).toHaveBeenCalled();
+  await reactAct(() => workers[0].onmessage({ data: points }));
+  expect(view.result.current.pending).toBe(true);
+  await reactAct(() => workers[1].onmessage({ data: points }));
+  expect(view.result.current.pending).toBe(false);
+  view.unmount();
+  expect(workers[1].terminate).toHaveBeenCalled();
+});
+
+test("motion publishes coordinates without rerendering React every frame", async () => {
+  let nextFrame;
+  vi.stubGlobal("matchMedia", () => ({
+    matches: false,
+    addEventListener() {},
+    removeEventListener() {},
+  }));
+  vi.stubGlobal("requestAnimationFrame", (fn) => {
+    nextFrame = fn;
+    return 1;
+  });
+  vi.stubGlobal("cancelAnimationFrame", vi.fn());
+  const graph = buildNoteGraph([
+    { filename: "A.md", title: "A", links: ["B"] },
+    { filename: "B.md", title: "B", links: [] },
+  ]);
+  const layout = layoutNotes(graph),
+    forces = { center: 1, repel: 1, link: 1, distance: 190 };
+  const paint = vi.fn();
+  let renders = 0;
+  const view = renderHook(() => {
+    renders++;
+    return useGraphMotion(graph, layout, forces, paint);
+  });
+  const before = renders;
+  const x = view.result.current.currentPoints().get("A.md").x;
+  await reactAct(() => nextFrame(17));
+  await reactAct(() => nextFrame(34));
+  expect(view.result.current.currentPoints().get("A.md").x).not.toBe(x);
+  expect(renders).toBe(before);
+  expect(paint).toHaveBeenCalled();
+  view.unmount();
+});
+
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     loadAddon() {}
@@ -154,13 +269,13 @@ test("brain graph derives only real links, resolves aliases and bounds large vau
   ).toBe(true);
   expect(layoutNotes(graph)).toEqual(positions);
   const large = buildNoteGraph(
-    Array.from({ length: 300 }, (_, i) => ({
+    Array.from({ length: 550 }, (_, i) => ({
       filename: `Note ${i}.md`,
       title: `Note ${i}`,
       links: [],
     })),
   );
-  expect(large.nodes).toHaveLength(250);
+  expect(large.nodes).toHaveLength(500);
   expect(large.omitted).toBe(50);
 });
 test("graph physics settles, keeps a dragged node pinned and moves its neighbours", () => {
@@ -510,6 +625,82 @@ test("graph settings control display, groups, orphan visibility and forces and r
   );
   expect(query).toHaveBeenCalledWith("");
 });
+test("brain reports wiki coverage and writer limits and follows imported filename aliases", async () => {
+  const user = userEvent.setup();
+  const project = { id: "p", name: "Wiki" };
+  const data = {
+    vaultPath: "/test/vault",
+    indexing: { status: "partial" },
+    scopes: [
+      {
+        scope: "project",
+        coverage: {
+          wiki: { indexed: 232, total: 232 },
+          documents: { indexed: 328, total: 328 },
+          code: { indexed: 400, total: 1400 },
+          omissions: [],
+        },
+      },
+    ],
+    writer: {
+      model: "gpt-5.6-luna",
+      enabled: true,
+      status: "budget-paused",
+      used: 10,
+      dailyCalls: 10,
+      queued: 3,
+      completed: 10,
+      globalUsed: 10,
+      globalLimit: 30,
+    },
+    notes: [
+      {
+        filename: "Home.md",
+        title: "Home",
+        content: "# Home\n[[Code Document Payments abc123|Payment guide]]",
+        links: ["Code Document Payments abc123|Payment guide"],
+        scope: "project",
+      },
+      {
+        filename: "Code Document Payments abc123.md",
+        title: "Payments",
+        content: "# Imported payments\nSource page content.",
+        links: [],
+        scope: "project",
+        generated: true,
+      },
+    ],
+  };
+  const request = vi.fn(async () => ({ ok: true, json: async () => data }));
+  vi.stubGlobal("fetch", request);
+  render(
+    <BrainView
+      project={project}
+      state={{ ...emptyState, projects: [project] }}
+      act={(fn) => fn()}
+      notify={vi.fn()}
+    />,
+  );
+  expect(await screen.findByText(/Wiki 232\/232/)).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Show note panel" }));
+  await user.click(screen.getByRole("button", { name: "Payment guide" }));
+  expect(
+    await screen.findByRole("heading", { name: "Imported payments" }),
+  ).toBeTruthy();
+  await user.click(screen.getByText(/Writer: budget-paused/));
+  expect(screen.getByText("gpt-5.6-luna")).toBeTruthy();
+  await user.click(
+    screen.getByRole("checkbox", { name: "Maintain project wiki" }),
+  );
+  expect(
+    request.mock.calls.some(
+      ([, init]) =>
+        init?.method === "POST" &&
+        JSON.parse(init.body).writer?.enabled === false,
+    ),
+  ).toBe(true);
+});
+
 test("brain opens linked notes beside the graph and guards unsaved edits", async () => {
   const user = userEvent.setup(),
     notify = vi.fn();
@@ -3452,6 +3643,61 @@ test("review uses a single header and keeps session metadata out of the conversa
   expect(screen.queryByRole("heading", { name: "Security review" })).toBeNull();
   expect(screen.getByRole("button", { name: "Accept changes" })).toBeTruthy();
 });
+test("session details distinguish initial context from recorded mid-turn brain reads", async () => {
+  const run = {
+    id: "brain-lookups",
+    title: "Brain lookups",
+    prompt: "Stock task",
+    projectId: "project",
+    status: "review",
+    sandbox: "workspace-write",
+    createdAt: "2026-09-09T12:00:00Z",
+    files: [],
+    scopes: [],
+    dependencies: [],
+    usage: {},
+  };
+  const event = {
+    seq: 1,
+    type: "brain.retrieved",
+    time: run.createdAt,
+    data: {
+      action: "read",
+      notes: [{ filename: "Stock.md", startLine: 39, endLine: 60 }],
+    },
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url) => ({
+      ok: true,
+      json: async () =>
+        url.includes("/context?")
+          ? { text: "Initial selected evidence" }
+          : { ...run, events: [event] },
+    })),
+  );
+  const user = userEvent.setup();
+  render(
+    <RunDetail
+      runId={run.id}
+      project={{ id: "project" }}
+      state={{ runs: [run], findings: [] }}
+      act={(fn) => fn()}
+      goRun={() => {}}
+      onSettings={() => {}}
+    />,
+  );
+  await screen.findByRole("heading", { name: "Brain lookups" });
+  await user.click(screen.getByText("Tools", { selector: "summary" }));
+  await user.click(
+    screen.getByRole("button", { name: "Session details", exact: true }),
+  );
+  expect(await screen.findByText("Initial selected evidence")).toBeTruthy();
+  expect(
+    screen.getByRole("heading", { name: "Brain lookups during this chat" }),
+  ).toBeTruthy();
+  expect(screen.getByText("Read: Stock.md (lines 39–60)")).toBeTruthy();
+});
 test("session form defaults to read-only and supports saving a scoped build draft", async () => {
   const save = vi.fn();
   const user = userEvent.setup();
@@ -3580,7 +3826,7 @@ test("keyboard jump navigation opens project brain", async () => {
     vi.fn(async (url) => ({
       ok: true,
       json: async () =>
-        url.endsWith("/brain")
+        url.split("?")[0].endsWith("/brain")
           ? {
               vaultPath: "/test/brain",
               notes: [

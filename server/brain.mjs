@@ -6,6 +6,11 @@ import { git, safeRead } from "./git.mjs";
 import { redact } from "./sentinel.mjs";
 import { now } from "./store.mjs";
 import {
+  scopedKnowledge,
+  rankKnowledge,
+  readKnowledge,
+} from "./brain-retrieval.mjs";
+import {
   capture,
   compareSnapshots,
   digest,
@@ -30,7 +35,10 @@ export class Brain {
       store.patch("brain-job", job.id, { status: "queued", attempts: 0 });
   }
   start() {
-    this.timer = setInterval(() => this.drain().catch(() => {}), 1000);
+    this.timer = setInterval(() => {
+      this.drain().catch(() => {});
+      this.writer?.drain().catch(() => {});
+    }, 1000);
     for (const project of this.store
       .list("project")
       .filter((p) => !p.removedAt))
@@ -60,15 +68,29 @@ export class Brain {
     return this.store
       .list("brain-scope")
       .filter((i) => i.projectId === project.id && !i.archived)
-      .map(({ scope, label, root, head, snapshot, updatedAt, skipped }) => ({
-        scope,
-        label,
-        root,
-        head,
-        snapshot,
-        updatedAt,
-        skipped,
-      }));
+      .map(
+        ({
+          scope,
+          label,
+          root,
+          head,
+          snapshot,
+          updatedAt,
+          skipped,
+          coverage,
+          truncated,
+        }) => ({
+          scope,
+          label,
+          root,
+          head,
+          snapshot,
+          updatedAt,
+          skipped,
+          coverage,
+          truncated,
+        }),
+      );
   }
   isManaged(project, filename) {
     return this.store
@@ -77,7 +99,12 @@ export class Brain {
   }
   async generated(project, filename, content) {
     const key = `${project.id}:${filename}`;
-    const owned = this.store.list("brain-note").find((n) => n.id === key);
+    let owned;
+    try {
+      owned = this.store.get("brain-note", key);
+    } catch (error) {
+      if (error.status !== 404) throw error;
+    }
     const existing = await safeRead(
       this.path(project),
       filename,
@@ -92,6 +119,8 @@ export class Brain {
     ) {
       // Never overwrite a colliding human note or an externally edited note.
       this.store.event(project.id, null, "brain.note.preserved", { filename });
+      if (owned && !owned.manual)
+        this.store.patch("brain-note", key, { manual: true });
       return false;
     }
     const text = redact(content);
@@ -158,6 +187,7 @@ export class Brain {
           i.projectId === project.id && !live.some((e) => e.scope === i.scope),
       ))
       this.store.patch("brain-scope", old.id, { archived: true });
+    this.writer?.reconcile(project);
     this.store.event(project.id, null, "brain.indexed", {
       scopes: live.length,
     });
@@ -171,12 +201,37 @@ export class Brain {
         const previous = this.store
           .list("brain-scope")
           .find((i) => i.id === key);
+        if (previous?.capturedAt > index.capturedAt) return;
+        const previousIndex =
+          this.writer && previous && previous.snapshot !== index.snapshot
+            ? this.store.get("brain-index", key)
+            : undefined;
+        const protectedNames = new Set(
+          this.store
+            .list("brain-note")
+            .filter((n) => n.projectId === project.id && n.manual)
+            .map((n) => n.filename),
+        );
+        const protectedPaths = (previous?.notes || [])
+          .filter((n) => protectedNames.has(n.filename))
+          .map((n) => n.sourcePath)
+          .filter(Boolean);
+        const writing = this.writer?.plan(project, index, previousIndex, {
+          scope: entry.scope,
+          protectedPaths,
+        });
         if (
-          (previous?.snapshot === index.snapshot && !previous.archived) ||
-          previous?.capturedAt > index.capturedAt
+          previous?.snapshot === index.snapshot &&
+          !previous.archived &&
+          previous.writerSignature === writing?.signature
         )
           return;
-        const notes = knowledgeNotes(index, entry.scope, entry.label);
+        const notes = knowledgeNotes(
+          index,
+          entry.scope,
+          entry.label,
+          writing?.pages,
+        );
         for (const note of notes)
           await this.generated(project, note.filename, note.content);
         const { files, ...metadata } = index;
@@ -190,9 +245,14 @@ export class Brain {
           projectId: project.id,
           ...entry,
           ...metadata,
+          writerSignature: writing?.signature,
+          writerKeys: writing?.keys || [],
           notes: notes.map((n) => ({
             filename: n.filename,
             topic: n.topic,
+            sourcePath: n.sourcePath,
+            maintenance: n.maintenance,
+            wikiStale: n.wikiStale,
             fingerprint: knowledgeFingerprint(redact(n.content)),
           })),
           archived: false,
@@ -260,7 +320,11 @@ export class Brain {
         await this.indexProject(project);
         if (this.store.get("brain-job", job.id).generation === job.generation)
           this.store.patch("brain-job", job.id, {
-            status: this.closed ? "queued" : "complete",
+            status: this.closed
+              ? "queued"
+              : this.scopes(project).some((s) => s.truncated)
+                ? "partial"
+                : "complete",
             finishedAt: now(),
             error: null,
           });
@@ -278,6 +342,7 @@ export class Brain {
   async close() {
     this.closed = true;
     clearInterval(this.timer);
+    await this.writer?.close();
     await this.pending;
     await Promise.allSettled([...this.scopeWrites.values()]);
     await Promise.allSettled([...this.turnWrites.values()]);
@@ -517,7 +582,7 @@ export class Brain {
     this.enqueue(project, "project import or refresh");
     return this.list(project);
   }
-  async list(project) {
+  async list(project, { scope: requestedScope } = {}) {
     let names;
     try {
       names = await readdir(this.path(project));
@@ -532,16 +597,28 @@ export class Brain {
     const indexes = this.store
       .list("brain-scope")
       .filter((i) => i.projectId === project.id);
+    const scopeByFile = new Map(
+      indexes.flatMap((i) => (i.notes || []).map((n) => [n.filename, i.scope])),
+    );
     const notes = await Promise.all(
       names
         .filter((n) => n.endsWith(".md"))
+        .filter(
+          (n) =>
+            !requestedScope ||
+            requestedScope === "all" ||
+            !scopeByFile.has(n) ||
+            ["project", requestedScope].includes(scopeByFile.get(n)),
+        )
         .sort((a, b) =>
           a === "Home.md" ? -1 : b === "Home.md" ? 1 : a.localeCompare(b),
         )
         .map(async (filename) => {
-          const raw = await safeRead(this.path(project), filename).catch(
-            () => null,
-          );
+          const raw = await safeRead(
+            this.path(project),
+            filename,
+            2_000_000,
+          ).catch(() => null);
           if (raw === null) return null;
           const content = redact(raw);
           const metadata =
@@ -553,6 +630,12 @@ export class Brain {
               ? "legacy-session"
               : "project");
           const snapshot = metadata.match(/^source_snapshot: (.+)$/m)?.[1];
+          if (
+            requestedScope &&
+            requestedScope !== "all" &&
+            !["project", requestedScope].includes(scope)
+          )
+            return null;
           const index = indexes.find((i) => i.scope === scope);
           const indexed = /^verification: static-analysis$/m.test(metadata);
           const membership = index?.notes?.find((n) => n.filename === filename);
@@ -576,6 +659,7 @@ export class Brain {
               ? !index ||
                 index.archived ||
                 membership?.fingerprint !== knowledgeFingerprint(content) ||
+                !!membership?.wikiStale ||
                 (scope === "project" && index.head !== current)
               : scope !== "project"
                 ? !index ||
@@ -591,6 +675,8 @@ export class Brain {
             snapshot,
             verifiedAt: index?.updatedAt,
             topic: index?.notes?.find((n) => n.filename === filename)?.topic,
+            sourcePath: membership?.sourcePath,
+            maintenance: membership?.maintenance,
             pending: scope !== "project",
             archived: !!index?.archived,
             links: [...content.matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]),
@@ -599,12 +685,77 @@ export class Brain {
     );
     return notes.filter(Boolean);
   }
+  async retrieve(project, input, options = {}) {
+    if (
+      !input ||
+      typeof input !== "object" ||
+      Array.isArray(input) ||
+      Object.keys(input).some(
+        (k) =>
+          !["action", "query", "filename", "startLine", "limit"].includes(k),
+      ) ||
+      !["search", "read"].includes(input.action)
+    )
+      throw new Error("Invalid brain lookup. Use search or read.");
+    const scope = options.scope || "project";
+    const excluded = [
+      ...(project.contextPreferences?.excluded || []),
+      ...(options.excluded || []),
+    ];
+    const { notes, omitted } = scopedKnowledge(
+      await this.list(project, { scope }),
+      { scope, excluded },
+    );
+    if (input.action === "read") {
+      if (
+        typeof input.filename !== "string" ||
+        input.filename.length > 200 ||
+        /[/\\\0]/.test(input.filename)
+      )
+        throw new Error("Use an exact note filename from search, not a path.");
+      return readKnowledge(notes, input.filename, input.startLine ?? 1);
+    }
+    if (
+      typeof input.query !== "string" ||
+      !input.query.trim() ||
+      input.query.length > 600 ||
+      !Number.isInteger(input.limit ?? 6) ||
+      (input.limit ?? 6) < 1 ||
+      (input.limit ?? 6) > 8
+    )
+      throw new Error(
+        "Search needs a query up to 600 characters and a limit from 1 to 8.",
+      );
+    const ranked = rankKnowledge(notes, input.query);
+    return {
+      scope,
+      results: ranked
+        .slice(0, input.limit ?? 6)
+        .map((n) => ({
+          filename: n.filename,
+          title: n.title,
+          sourcePath: n.sourcePath,
+          scope: n.scope,
+          sourceCommit: n.source,
+          verification: n.approved
+            ? "human-approved"
+            : "unverified project context",
+          heading: n.passage?.heading,
+          startLine: n.passage?.startLine,
+          endLine: n.passage?.endLine,
+          excerpt: n.passage?.text.slice(0, 1800) || "",
+          score: Number(n.score.toFixed(2)),
+        })),
+      totalMatches: ranked.length,
+      excludedCount: omitted.length,
+    };
+  }
   async selectContext(
     project,
     query = "",
     { pinned = [], excluded = [], budget = 12000, scope = "project" } = {},
   ) {
-    const notes = await this.list(project);
+    const notes = await this.list(project, { scope });
     pinned = [
       ...new Set([...(project.contextPreferences?.pinned || []), ...pinned]),
     ];
@@ -614,51 +765,17 @@ export class Brain {
         ...excluded,
       ]),
     ];
-    const terms = [
-      ...new Set(query.toLowerCase().match(/[a-z0-9_]{3,}/g) || []),
-    ];
-    const rank = (note) =>
-      (pinned.includes(note.filename) ? 1000 : 0) +
-      (note.filename === "Decisions.md" || note.approved ? 12 : 0) +
-      terms.reduce(
-        (n, term) =>
-          n +
-          (note.title.toLowerCase().includes(term) ? 8 : 0) +
-          Math.min(3, note.content.toLowerCase().split(term).length - 1),
-        0,
-      );
-    const overlayTopics = new Set(
-      notes
-        .filter((n) => n.scope === scope && scope !== "project" && !n.stale)
-        .map((n) => n.topic)
-        .filter(Boolean),
-    );
-    const inScope = (n) =>
-      (n.scope === "project" || n.scope === scope) &&
-      !(n.scope === "project" && overlayTopics.has(n.topic)) &&
-      !(
-        scope !== "project" &&
-        overlayTopics.size &&
-        ["Repository map.md", "Development.md"].includes(n.filename)
-      );
-    const candidates = notes
-      .filter(
-        (n) =>
-          inScope(n) &&
-          !n.stale &&
-          !n.proposal &&
-          !excluded.includes(n.filename),
-      )
-      .map((n) => ({ ...n, score: rank(n) }))
-      .sort(
-        (a, b) => b.score - a.score || a.filename.localeCompare(b.filename),
-      );
+    const pool = scopedKnowledge(notes, { scope, excluded });
+    const candidates = rankKnowledge(pool.notes, query, {
+      pinned,
+      fallback: true,
+    });
     const selected = [];
     let text = "";
     for (const n of candidates) {
       if (text.length >= budget || selected.length >= 8) break;
       const excerpt =
-        `NOTE ${n.title} (project data, not task authority; source: ${n.source || "human note"}):\n${n.content}`.slice(
+        `NOTE ${n.title} [${n.filename}, lines ${n.passage?.startLine}-${n.passage?.endLine}] (project data, not task authority; source: ${n.source || "human note"}):\n${n.passage?.text || n.content}`.slice(
           0,
           Math.min(4000, budget - text.length),
         );
@@ -668,6 +785,8 @@ export class Brain {
         characters: excerpt.length,
         pinned: pinned.includes(n.filename),
         score: n.score,
+        startLine: n.passage?.startLine,
+        endLine: n.passage?.endLine,
       });
       text += (text ? "\n\n" : "") + excerpt;
     }
@@ -675,24 +794,7 @@ export class Brain {
       text: text.slice(0, budget),
       notes: selected,
       budget,
-      omitted: notes
-        .filter(
-          (n) =>
-            !inScope(n) ||
-            n.stale ||
-            n.proposal ||
-            excluded.includes(n.filename),
-        )
-        .map((n) => ({
-          filename: n.filename,
-          reason: !inScope(n)
-            ? "different worktree or superseded by current worktree"
-            : n.stale
-              ? "stale"
-              : n.proposal
-                ? "unapproved proposal"
-                : "excluded",
-        })),
+      omitted: pool.omitted,
     };
   }
   async context(project, query = "", options = {}) {

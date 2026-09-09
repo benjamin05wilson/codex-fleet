@@ -265,6 +265,57 @@ test("successful follow-ups reuse the durable Codex and browser connection", asy
   assert.equal(result.usage.input_tokens, 40);
   assert.equal(result.usage.output_tokens, 20);
 });
+test("an old idle chat gains brain tools on its next turn, then retains them across follow-ups", async (t) => {
+  const w = await setup(t),
+    engine = w.createEngine();
+  const run = engine.create(w.project.id, {
+    title: "Brain upgrade",
+    prompt: "TEST_POLICY",
+    sandbox: "workspace-write",
+  });
+  engine.queue(run.id);
+  await until(() => w.store.get("run", run.id).status === "review");
+  const oldIdentity = w.store.get("run", run.id).worker.identity;
+  let connections = 0;
+  engine.brainTools = {
+    connection: () => {
+      connections++;
+      return {
+        node: process.execPath,
+        script: fileURLToPath(
+          new URL("../server/brain-mcp.mjs", import.meta.url),
+        ),
+        url: "http://127.0.0.1:1/fixture",
+        token: "fixture-only",
+      };
+    },
+  };
+  engine.queue(run.id, "TEST_POLICY second turn");
+  await until(
+    () =>
+      w.store.get("run", run.id).status === "review" &&
+      w.store.get("run", run.id).attempt === 2,
+  );
+  const next = w.store.get("run", run.id);
+  assert.notEqual(next.worker.identity, oldIdentity);
+  assert.equal(next.worker.brainTools, true);
+  const policy = JSON.parse(
+    await readFile(join(next.worktree, "policy.json"), "utf8"),
+  );
+  assert.ok(policy.thread.config["mcp_servers.fleet_brain"]);
+  assert.match(policy.thread.developerInstructions, /use fleet_brain search/);
+  engine.queue(run.id, "TEST_POLICY third turn");
+  await until(
+    () =>
+      w.store.get("run", run.id).status === "review" &&
+      w.store.get("run", run.id).attempt === 3,
+  );
+  assert.equal(
+    w.store.get("run", run.id).worker.identity,
+    next.worker.identity,
+  );
+  assert.equal(connections, 1);
+});
 test("worker retries one pre-initialization app-server exit without replaying a turn", async (t) => {
   const w = await setup(t),
     engine = w.createEngine();

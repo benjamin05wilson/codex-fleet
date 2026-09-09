@@ -209,10 +209,19 @@ function MD({ children, onLink, onFile }) {
       >
         {String(children || "")
           .replace(/^---\n[\s\S]*?\n---\n/, "")
-          .replace(
-            /\[\[([^\]]+)\]\]/g,
-            (_, t) => `[${t}](#note:${encodeURIComponent(t)})`,
-          )}
+          .split(
+            /(^```[^\n]*\n[\s\S]*?^```\s*$|^~~~[^\n]*\n[\s\S]*?^~~~\s*$)/gm,
+          )
+          .map((chunk, i) =>
+            i % 2
+              ? chunk
+              : chunk.replace(
+                  /\[\[([^\]]+)\]\]/g,
+                  (_, t) =>
+                    `[${t.split("|")[1] || t.split("#")[0]}](#note:${encodeURIComponent(t)})`,
+                ),
+          )
+          .join("")}
       </Markdown>
     </div>
   );

@@ -6,6 +6,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Store, id, now } from "./store.mjs";
 import { Brain } from "./brain.mjs";
+import { BrainWriter } from "./brain-writer.mjs";
+import { BrainBroker } from "./brain-broker.mjs";
 import { Engine } from "./engine.mjs";
 import { repository, changes, inside } from "./git.mjs";
 import { redact } from "./sentinel.mjs";
@@ -66,6 +68,10 @@ export async function createApp({
     concurrency,
     transport,
   });
+  brain.writer = new BrainWriter(store, {
+    bin: engine.bin,
+    onWrite: (project) => brain.enqueue(project, "wiki analysis ready"),
+  });
   const auth = authFactory(engine.bin, dataDir, {
     onChange: () => {
       discoveryCache = null;
@@ -90,6 +96,8 @@ export async function createApp({
   engine.previews = previews;
   const browsers = browserFactory(engine, browserOptions);
   engine.browsers = browsers;
+  const brainTools = new BrainBroker(engine);
+  engine.brainTools = brainTools;
   const workflows = new Workflows(store, engine);
   const teams = new Teams(store, engine, brain);
   engine.teams = teams;
@@ -292,6 +300,29 @@ export async function createApp({
       );
       const path = url.pathname;
       if (path.startsWith("/api/")) {
+        if (path === "/api/brain-agent" && req.method === "POST") {
+          const token = String(req.headers.authorization || "").replace(
+            /^Bearer /,
+            "",
+          );
+          brainTools.check(token);
+          const controller = new AbortController();
+          const abort = () => controller.abort();
+          req.once("aborted", abort);
+          res.once("close", abort);
+          try {
+            const result = await brainTools.retrieve(
+              token,
+              await body(req, 4096),
+              controller.signal,
+            );
+            if (!res.destroyed) send(result);
+          } finally {
+            req.off("aborted", abort);
+            res.off("close", abort);
+          }
+          return;
+        }
         const nativeMatch = path.match(
           /^\/api\/native-browser\/(register|launcher-register|next|result|close)$/,
         );
@@ -874,19 +905,26 @@ export async function createApp({
           }
           if (action === "brain" && req.method === "GET") {
             send({
-              notes: await brain.list(project),
+              notes: await brain.list(project, {
+                scope: url.searchParams.get("scope") || undefined,
+              }),
               vaultPath: brain.path(project),
               indexing: brain.status(project),
               scopes: brain.scopes(project),
+              writer: brain.writer.status(project),
             });
             return;
           }
           if (action === "brain" && req.method === "POST") {
+            const input = await body(req);
+            if (input.writer) brain.writer.configure(project, input.writer);
+            const currentProject = store.get("project", project.id);
             send({
-              notes: await brain.refresh(project),
+              notes: await brain.refresh(currentProject),
               vaultPath: brain.path(project),
               indexing: brain.status(project),
               scopes: brain.scopes(project),
+              writer: brain.writer.status(currentProject),
             });
             return;
           }
@@ -1132,6 +1170,7 @@ export async function createApp({
   });
   browsers.base = () =>
     server.address() ? `http://127.0.0.1:${server.address().port}` : "";
+  brainTools.base = browsers.base;
   brain.start();
   return {
     server,
@@ -1142,6 +1181,7 @@ export async function createApp({
     workflows,
     previews,
     browsers,
+    brainTools,
     addProject,
     refreshInventories,
     close: async ({ preserveWorkers = false } = {}) => {
@@ -1153,6 +1193,7 @@ export async function createApp({
       await teams.close();
       await previews.close();
       await browsers.close();
+      brainTools.close();
       await terminals.close();
       for (const stream of streams) stream.end();
       await engine.shutdown({ preserveWorkers });

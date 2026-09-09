@@ -53,14 +53,9 @@ if (process.argv.includes("app-server")) {
       reply({ thread: { id: "fixture-thread", sessionId: "fixture-root" } });
     } else if (request.method === "mcpServerStatus/list") {
       reply({
-        data: threadOptions?.config?.["mcp_servers.fleet_browser"]
-          ? [
-              {
-                name: "fleet_browser",
-                tools: { fleet_browser: { name: "fleet_browser" } },
-              },
-            ]
-          : [],
+        data: ["fleet_browser", "fleet_brain"]
+          .filter((name) => threadOptions?.config?.["mcp_servers." + name])
+          .map((name) => ({ name, tools: { [name]: { name } } })),
         nextCursor: null,
       });
     } else if (request.method === "turn/interrupt") {
