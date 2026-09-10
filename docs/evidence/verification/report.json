@@ -1,7 +1,7 @@
 {
-  "time": "2026-09-10T16:28:19.619Z",
-  "commit": "3a80f098692a310224bb7857184750a763da1509",
-  "dirty": true,
+  "time": "2026-09-10T16:29:13.156Z",
+  "commit": "36ca3a09556b9c5ef3541230f311b924d4699e4b",
+  "dirty": false,
   "provenance": "commit and dirty status captured before verification",
   "node": "v24.18.1",
   "platform": "darwin",
@@ -18,7 +18,7 @@
       "selectedNames": [
         "worker survives daemon detach; reconnect does not duplicate a turn or usage"
       ],
-      "processElapsedMs": 3235,
+      "processElapsedMs": 2947,
       "command": [
         "node",
         "--test",
@@ -35,7 +35,7 @@
       "selectedNames": [
         "approved workflow executes once, validates dependencies, and proposes completion without accepting"
       ],
-      "processElapsedMs": 5133,
+      "processElapsedMs": 5082,
       "command": [
         "node",
         "--test",
@@ -52,7 +52,7 @@
       "selectedNames": [
         "fixed file findings resolve and reappear when the defect returns"
       ],
-      "processElapsedMs": 1373,
+      "processElapsedMs": 1359,
       "command": [
         "node",
         "--test",
@@ -69,7 +69,7 @@
       "selectedNames": [
         "interactive terminal requires a single owner and invalidates checks"
       ],
-      "processElapsedMs": 1393,
+      "processElapsedMs": 1359,
       "command": [
         "node",
         "--test",
@@ -86,7 +86,7 @@
       "selectedNames": [
         "context is project-isolated, ranked, bounded, and excludes unapproved proposals"
       ],
-      "processElapsedMs": 462,
+      "processElapsedMs": 457,
       "command": [
         "node",
         "--test",

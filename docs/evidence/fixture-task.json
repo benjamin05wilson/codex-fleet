@@ -1,8 +1,8 @@
 {
   "kind": "Real Fleet task and validation with scripted Codex/Writer transports",
-  "dirtyBeforeCapture": true,
+  "dirtyBeforeCapture": false,
   "sourceHashes": {
-    "scripts/capture-demo.mjs": "94b7caac9d60a7a80556f690c849ac953a0695d6d5dd2bde4e2b743d79cd1ad7",
+    "scripts/capture-demo.mjs": "7c27c29e37a96d337f249665c121c152cc87d70447c574bcd0412e3d2eeaf363",
     "tests/fixtures/codex.mjs": "17910b0ee29b703f5805423f4de31572bfb1ba55f8addd7fc042a8fa59459dbb",
     "tests/fixtures/brain-writer.mjs": "4fa1cbc7afcc4f8e475582fa690fec999897584005ac9e23d66f9b9eb89c04da",
     "package-lock.json": "4373008f1259ca955c8488599d2578a8458204796de2cc27ca348b54cd1e5a6b"
@@ -10,7 +10,7 @@
   "command": "npm run demo:capture",
   "node": "v24.18.1",
   "platform": "darwin",
-  "commit": "3a80f098692a310224bb7857184750a763da1509",
+  "commit": "36ca3a09556b9c5ef3541230f311b924d4699e4b",
   "sourceUnchanged": true,
   "status": "review",
   "attempt": 1,
