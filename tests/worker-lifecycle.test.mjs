@@ -64,8 +64,30 @@ test("worktree watchers resolve aliases to native paths and still observe edits"
   assert.equal(engine.watchers.has(run.id), true);
   assert.equal(resolvePath.mock.calls[0].arguments[0], alias);
   assert.equal(resolvePath.mock.calls[0].result, canonical);
-  await writeFile(join(directory, "observed.txt"), "changed");
+  // fs.watch has no portable ready event. macOS FSEvents can miss an edit
+  // immediately after registration. Observe a native readiness probe first;
+  // merely sleeping or raising the later assertion deadline cannot recover it.
+  const watcher = engine.watchers.get(run.id);
+  let ready = false;
+  const probe = (_event, filename) => {
+    if (String(filename).includes("watch-ready.txt")) ready = true;
+  };
+  watcher.on("change", probe);
+  let revision = 0;
+  await until(async () => {
+    if (ready) return true;
+    await writeFile(join(directory, "watch-ready.txt"), String(++revision));
+    return false;
+  });
+  watcher.off("change", probe);
   await until(() => scan.mock.callCount() > 0);
+  scan.mock.resetCalls();
+  let observed = false;
+  watcher.on("change", (_event, filename) => {
+    if (String(filename).includes("observed.txt")) observed = true;
+  });
+  await writeFile(join(directory, "observed.txt"), "changed");
+  await until(() => observed && scan.mock.callCount() > 0);
   assert.equal(scan.mock.calls[0].arguments[0], run.id);
   await engine.shutdown();
   assert.equal(engine.watchers.size, 0);

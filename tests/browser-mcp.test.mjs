@@ -23,7 +23,7 @@ async function waitFor(check) {
 
 async function fixture(
   t,
-  { commandTimeoutMs = 10000, mcpTimeoutMs = 5000 } = {},
+  { commandTimeoutMs = 10000, mcpTimeoutMs = 5000, timers } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "fleet-browser-mcp-test-"));
   const app = await createApp({
@@ -74,6 +74,7 @@ async function fixture(
     url: connection.url,
     capability: connection.token,
     timeoutMs: mcpTimeoutMs,
+    ...(timers ? { timers } : {}),
   });
   const send = (value) =>
     input.write(JSON.stringify({ jsonrpc: "2.0", ...value }) + "\n");
@@ -90,9 +91,24 @@ test(
   "MCP timeout cancels queued HTTP work and the same MCP connection remains usable",
   { timeout: 10000 },
   async (t) => {
-    const f = await fixture(t, { mcpTimeoutMs: 300 });
+    // Drive only the MCP deadline, after real HTTP work has reached the queue.
+    // A 300ms wall-clock race can expire before Windows fetch even connects.
+    const deadlines = new Set();
+    const timers = {
+      setTimeout(fn, ms) {
+        assert.equal(ms, 300);
+        deadlines.add(fn);
+        return fn;
+      },
+      clearTimeout(fn) {
+        deadlines.delete(fn);
+      },
+    };
+    const f = await fixture(t, { mcpTimeoutMs: 300, timers });
     f.call(1, { action: "scroll", text: "down" });
     await waitFor(() => f.page.queue.length === 1);
+    assert.equal(deadlines.size, 1);
+    [...deadlines][0]();
     await waitFor(() => f.replies.has(1));
     assert.equal(f.replies.get(1).isError, true);
     assert.match(f.replies.get(1).content[0].text, /timed out/);
@@ -112,6 +128,7 @@ test(
     });
     await waitFor(() => f.replies.has(2));
     assert.equal(f.replies.get(2).isError, false);
+    assert.equal(deadlines.size, 0);
   },
 );
 

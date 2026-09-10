@@ -10,6 +10,7 @@ export function serveBrowserMcp({
   url = process.env.FLEET_BROWSER_URL,
   capability = process.env.FLEET_BROWSER_CAPABILITY,
   timeoutMs = 85000,
+  timers = { setTimeout, clearTimeout },
   tool = browserTool,
   serverName = "fleet-browser",
 } = {}) {
@@ -72,7 +73,7 @@ export function serveBrowserMcp({
       });
     const controller = new AbortController();
     pending.set(request.id, controller);
-    const timer = setTimeout(
+    const timer = timers.setTimeout(
       () =>
         controller.abort(
           new Error(
@@ -114,7 +115,7 @@ export function serveBrowserMcp({
         isError: true,
       });
     } finally {
-      clearTimeout(timer);
+      timers.clearTimeout(timer);
       pending.delete(request.id);
     }
   });
