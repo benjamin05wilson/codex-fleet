@@ -20,6 +20,9 @@ const alreadyRunning = () =>
   );
 
 function legacyOwner(pid) {
+  // This process cannot be a competing legacy daemon. Current-format owners,
+  // including reentrant acquisition, are already excluded by SQLite above.
+  if (pid === process.pid) return false;
   try {
     process.kill(pid, 0);
   } catch (error) {
