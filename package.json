@@ -21,7 +21,7 @@
     "desktop:package:win:zip": "npm run build && electron-builder --win zip --x64 --publish never",
     "desktop:package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "desktop:package:win:dir": "npm run build && electron-builder --win --x64 --dir --publish never",
-    "test:windows": "node --test --test-timeout=90000 tests/platform.test.mjs tests/windows-smoke.test.mjs tests/native-browser.test.mjs tests/native-browser-broker.test.mjs tests/native-only-browser.test.mjs tests/native-agent-bridge.test.mjs tests/browser-mcp.test.mjs",
+    "test:windows": "node --test --test-timeout=90000 tests/platform.test.mjs tests/headless-terminal.test.mjs tests/windows-smoke.test.mjs tests/native-browser.test.mjs tests/native-browser-broker.test.mjs tests/native-only-browser.test.mjs tests/native-agent-bridge.test.mjs tests/browser-mcp.test.mjs",
     "desktop:icon": "swift scripts/icon.swift build/fleet.iconset && iconutil -c icns build/fleet.iconset -o build/fleet.icns && node scripts/windows-branding.mjs",
     "fleet": "node cmd/fleet.mjs",
     "test": "npm run test:server && npm run test:ui",
@@ -45,9 +45,10 @@
     "ws": "8.21.3"
   },
   "devDependencies": {
-    "agent-browser": "0.36.0",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.7",
+    "@xterm/headless": "6.0.0",
+    "agent-browser": "0.36.0",
     "electron": "^44.2.0",
     "electron-builder": "^26.15.3",
     "jsdom": "^30.0.1",
