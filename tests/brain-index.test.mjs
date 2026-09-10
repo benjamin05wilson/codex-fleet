@@ -15,7 +15,12 @@ import { join } from "node:path";
 import { Store } from "../server/store.mjs";
 import { Brain } from "../server/brain.mjs";
 import { git, repository } from "../server/git.mjs";
-import { scopeFor, capture, knowledgeNotes } from "../server/brain-index.mjs";
+import {
+  scopeFor,
+  capture,
+  knowledgeNotes,
+  brainLimits,
+} from "../server/brain-index.mjs";
 import { documentName, resolveDocument } from "../server/brain-documents.mjs";
 import { BrainWriter } from "../server/brain-writer.mjs";
 
@@ -288,6 +293,19 @@ test("import builds linked code knowledge with evidence and excludes secrets, ge
     join(source, "alias"),
     process.platform === "win32" ? "junction" : "dir",
   );
+  // Make junction-style enumeration deterministic on every OS. An index entry
+  // below a link must be excluded even when Git lists the descendant as a file.
+  const object = (await git(source, ["rev-parse", "HEAD:src/api.js"])).trim();
+  await git(source, [
+    "update-index",
+    "--add",
+    "--cacheinfo",
+    `100644,${object},alias/value.json`,
+  ]);
+  const working = await capture(source);
+  assert.equal(working.truncated, false);
+  assert.ok(!working.manifest.some((path) => path.startsWith("alias/")));
+  assert.deepEqual(working.coverage.omissions, []);
   await brain.drain();
   assert.equal(brain.status(project).status, "complete");
   const notes = await brain.list(project),
@@ -548,4 +566,40 @@ test("a failed receipt write retries saved evidence rather than recapturing late
   );
   assert.match(content, /turnEvidence/);
   assert.doesNotMatch(content, /unrelatedLaterEdit/);
+});
+
+test("pinned batch capture keeps binary and byte limits independent of readable documentation", async (t) => {
+  const { source, commit } = await fixture(t);
+  await writeFile(join(source, "binary.js"), "not source\0binary payload");
+  await writeFile(
+    join(source, "oversized.js"),
+    "x".repeat(brainLimits.fileBytes + 1),
+  );
+  await mkdir(join(source, "wiki"));
+  await writeFile(
+    join(source, "wiki", "Readable.md"),
+    "# Kept\nFull documented evidence.\n",
+  );
+  await writeFile(
+    join(source, "wiki", "Oversized.md"),
+    "x".repeat(brainLimits.documentFileBytes + 1),
+  );
+  await git(source, ["add", "-A"]);
+  await commit();
+  const revision = (await git(source, ["rev-parse", "HEAD"])).trim();
+  const index = await capture(source, { revision });
+  assert.equal(index.files["binary.js"], undefined);
+  assert.equal(index.files["oversized.js"], undefined);
+  assert.equal(index.files["wiki/Oversized.md"], undefined);
+  assert.equal(
+    index.files["wiki/Readable.md"].text,
+    "# Kept\nFull documented evidence.\n",
+  );
+  assert.equal(index.truncated, true);
+  const reasons = Object.fromEntries(
+    index.coverage.omissions.map((item) => [item.path, item.reason]),
+  );
+  assert.equal(reasons["binary.js"], "binary");
+  assert.equal(reasons["oversized.js"], "file too large");
+  assert.equal(reasons["wiki/Oversized.md"], "file too large");
 });

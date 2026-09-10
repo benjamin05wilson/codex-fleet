@@ -25,7 +25,7 @@ jobs:
         timeout-minutes: 5
       - run: node --test --test-timeout=90000 tests/auth.test.mjs tests/windows-branding.test.mjs tests/desktop.test.mjs
         timeout-minutes: 5
-      - run: node --test --test-timeout=90000 tests/brain-index.test.mjs tests/brain-writer.test.mjs tests/brain-wiki.test.mjs tests/brain-retrieval.test.mjs tests/workspace-files.test.mjs tests/worker-lifecycle.test.mjs tests/terminal-lifecycle.test.mjs tests/focused.test.mjs tests/teams.test.mjs tests/shutdown.test.mjs tests/workspace.test.mjs
+      - run: node --test --test-timeout=90000 tests/brain-index.test.mjs tests/git-blobs.test.mjs tests/brain-writer.test.mjs tests/brain-wiki.test.mjs tests/brain-retrieval.test.mjs tests/workspace-files.test.mjs tests/worker-lifecycle.test.mjs tests/terminal-lifecycle.test.mjs tests/focused.test.mjs tests/teams.test.mjs tests/shutdown.test.mjs tests/workspace.test.mjs
         timeout-minutes: 5
       - run: npm run test:ui
         timeout-minutes: 5
