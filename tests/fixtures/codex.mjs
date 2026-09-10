@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Deterministic protocol fixture for tests only. Never used by the application/demo.
+// Deterministic protocol fixture for tests and explicit disposable capture only. Never selected by normal application startup.
 import { writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { execFile } from "node:child_process";

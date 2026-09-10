@@ -71,11 +71,13 @@ async function setup(t) {
     return engine;
   };
   t.after(async () => {
-    for (const engine of engines) engine.shutdown();
-    await until(() =>
-      engines.every((e) => !e.processes.size && !e.validations.size && !e.busy),
-    );
-    await delay(200);
+    await Promise.all(engines.map((engine) => engine.shutdown()));
+    await brain.close();
+    for (const engine of engines) {
+      assert.equal(engine.workers.size, 0);
+      assert.equal(engine.finishes.size, 0);
+      assert.equal(engine.scans.size, 0);
+    }
     store.close();
     await rm(root, { recursive: true, force: true });
   });

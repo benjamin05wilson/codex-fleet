@@ -1220,7 +1220,7 @@ export async function createApp({
     close: async ({ preserveWorkers = false } = {}) => {
       closing = true;
       engine.closing = true;
-      auth.close();
+      await auth.close();
       clearInterval(inventoryTimer);
       workflows.close();
       await teams.close();
@@ -1243,6 +1243,7 @@ export async function createApp({
         // clients must not keep an otherwise stopped daemon alive indefinitely.
         server.closeAllConnections();
       });
+      await discoveryPending;
       while (inventoryBusy)
         await new Promise((resolve) => setTimeout(resolve, 25));
     },

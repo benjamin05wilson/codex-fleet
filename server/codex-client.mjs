@@ -45,6 +45,8 @@ export class CodexClient extends EventEmitter {
       env: { ...env, ...browser.env, ...brain.env, LANG: "en_US.UTF-8" },
       stdio: ["pipe", "pipe", "pipe"],
     });
+    // `close` includes stdio release; `exit` alone is too early on Windows.
+    this.closed = new Promise((resolve) => this.child.once("close", resolve));
     this.child.stdin.on("error", () => {});
     this.child.stderr.on("data", (b) => this.emit("diagnostic", b.toString()));
     const fail = (error) => {
@@ -118,9 +120,19 @@ export class CodexClient extends EventEmitter {
     });
   }
   close() {
+    if (this.closing) return this.closing;
     this.lines?.close();
     if (process.platform === "win32") stopProcessTree(this.child);
     else this.child?.kill("SIGTERM");
+    const force = setTimeout(() => {
+      if (process.platform === "win32") stopProcessTree(this.child);
+      else this.child?.kill("SIGKILL");
+    }, 3500);
+    force.unref();
+    this.closing = (this.closed || Promise.resolve()).finally(() =>
+      clearTimeout(force),
+    );
+    return this.closing;
   }
 }
 
@@ -167,6 +179,6 @@ export async function sandboxCheck(bin, cwd, command, signal) {
     );
   } finally {
     signal?.removeEventListener("abort", abort);
-    client.close();
+    await client.close();
   }
 }

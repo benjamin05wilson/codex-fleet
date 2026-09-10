@@ -1,6 +1,7 @@
 name: Windows
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -19,10 +20,16 @@ jobs:
       - run: git config --global user.name "Fleet CI"
       - run: git config --global user.email "fleet-ci@example.invalid"
       - run: npm run test:windows
-      - run: node --test tests/api-capability.test.mjs tests/daemon-lock.test.mjs tests/daemon-startup.test.mjs tests/store-transactions.test.mjs
-      - run: node --test tests/auth.test.mjs tests/windows-branding.test.mjs tests/desktop.test.mjs
-      - run: node --test --test-timeout=90000 tests/brain-index.test.mjs tests/brain-writer.test.mjs tests/brain-wiki.test.mjs tests/brain-retrieval.test.mjs tests/workspace-files.test.mjs tests/worker-lifecycle.test.mjs tests/terminal-lifecycle.test.mjs tests/focused.test.mjs tests/teams.test.mjs tests/shutdown.test.mjs tests/workspace.test.mjs
+        timeout-minutes: 5
+      - run: node --test --test-timeout=90000 tests/api-capability.test.mjs tests/daemon-lock.test.mjs tests/daemon-startup.test.mjs tests/store-transactions.test.mjs
+        timeout-minutes: 5
+      - run: node --test --test-timeout=90000 tests/auth.test.mjs tests/windows-branding.test.mjs tests/desktop.test.mjs
+        timeout-minutes: 5
+      - run: node --test --test-timeout=90000 tests/brain-index.test.mjs tests/brain-settle.test.mjs tests/git-blobs.test.mjs tests/brain-writer.test.mjs tests/brain-wiki.test.mjs tests/brain-retrieval.test.mjs tests/workspace-files.test.mjs tests/worker-lifecycle.test.mjs tests/terminal-lifecycle.test.mjs tests/focused.test.mjs tests/teams.test.mjs tests/shutdown.test.mjs tests/workspace.test.mjs
+        timeout-minutes: 5
       - run: npm run test:ui
+        timeout-minutes: 5
+      - run: npm run demo:verify
       - run: npm run build
       - run: node tests/live-brain.mjs --run
       - run: node tests/live-brain.mjs --run --large

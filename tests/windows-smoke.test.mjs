@@ -9,16 +9,17 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createApp } from "../server/app.mjs";
 import { git, safeRead } from "../server/git.mjs";
 import { shellCommand, stopProcessTree } from "../shared/platform.mjs";
+import { headlessTerminal } from "./helpers/headless-terminal.mjs";
 import { discoverCodex } from "../server/discovery.mjs";
 
 const fixture = fileURLToPath(new URL("./fixtures/codex.mjs", import.meta.url));
-async function until(check, timeout = 10000) {
+async function until(check, timeout = 10000, phase = "Windows smoke") {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     if (await check()) return;
     await delay(50);
   }
-  throw Error("Windows smoke timed out");
+  throw Error(`${phase} timed out`);
 }
 test(
   "native Windows: SQLite workspace, Git worktree, Codex fixture and ConPTY terminal",
@@ -37,7 +38,9 @@ test(
       dataDir: join(directory, "data"),
       bin: fixture,
     });
+    let display;
     t.after(async () => {
+      display?.close();
       for (const [id, terminal] of app.engine.terminals.sessions) {
         app.engine.terminals.control(id, terminal.lease, "close", {});
         await until(() => !app.engine.terminals.sessions.has(id), 15000);
@@ -78,29 +81,57 @@ test(
     const terminals = app.engine.terminals;
     const { lease } = await terminals.open(run, "test-owner");
     const terminal = terminals.get(run.id);
-    // A real xterm client answers PowerShell's cursor-position query. This
-    // protocol-level smoke test has no renderer, so provide that response.
-    let transcript = "";
-    let pending = "";
-    terminal.process.onData((data) => {
-      transcript += data;
-      pending += data;
-      if (pending.includes("\x1b[6n")) {
-        terminal.process.write("\x1b[1;1R");
-        pending = "";
-      } else pending = pending.slice(-8);
+    display = headlessTerminal(terminal);
+    t.after(() => {
+      console.log(
+        "Windows terminal transcript:",
+        JSON.stringify(display.transcript),
+      );
+      display.close();
     });
-    t.after(() => console.log("Windows terminal transcript:", JSON.stringify(transcript)));
-    terminals.control(run.id, lease, "input", {
-      data: "Write-Output ('FLEET_' + 'WINDOWS_OK')\r",
-    });
-    await until(() =>
-      transcript.includes("FLEET_WINDOWS_OK"),
-      45000,
+    // Match the interactive UI: consume startup negotiation, observe a prompt,
+    // then wait for PSReadLine to echo the command before sending Enter.
+    // One shared deadline covers all phases, not a longer timeout per phase.
+    const deadline = Date.now() + 45000;
+    const wait = (check, phase) =>
+      until(check, Math.max(0, deadline - Date.now()), phase);
+    await wait(
+      () => /(?:^|\n)PS [\s\S]*>\s*$/.test(display.text),
+      "PowerShell prompt",
+    );
+    const command = "Write-Output ('FLEET_' + 'WINDOWS_OK')";
+    terminals.control(run.id, lease, "input", { data: command });
+    await wait(
+      () => display.text.replace(/\n/g, "").includes(command),
+      "PowerShell command echo",
+    );
+    terminals.control(run.id, lease, "input", { data: "\r" });
+    await wait(
+      () =>
+        display.text
+          .split("\n")
+          .some((line) => line.trim() === "FLEET_WINDOWS_OK"),
+      "PowerShell execution output",
     );
     terminals.control(run.id, lease, "resize", { cols: 90, rows: 24 });
+    display.resize(90, 24);
+    const pid = terminal.process.pid;
     terminals.control(run.id, lease, "close", {});
-    await until(() => !terminals.sessions.has(run.id));
+    await terminal.exited;
+    assert.notEqual(terminal.exitCode, undefined);
+    assert.equal(terminals.sessions.has(run.id), false);
+    await until(
+      () => {
+        try {
+          process.kill(pid, 0);
+          return false;
+        } catch (error) {
+          return error.code === "ESRCH";
+        }
+      },
+      10000,
+      "ConPTY shell ownership release",
+    );
   },
 );
 test(
@@ -123,7 +154,11 @@ test(
     const runner = spawn(
       process.execPath,
       [fileURLToPath(new URL("../server/runner.mjs", import.meta.url))],
-      { detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"] },
+      {
+        detached: true,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
+      },
     );
     let runnerOutput = "";
     let runnerError = "";

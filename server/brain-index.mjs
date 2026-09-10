@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { posix, resolve, relative } from "node:path";
 import { realpath, lstat } from "node:fs/promises";
 import { git, safeRead } from "./git.mjs";
+import { GitBlobs } from "./git-blobs.mjs";
 import { searchablePath } from "./search.mjs";
 import { redact } from "./sentinel.mjs";
 import { documentNotes, documentName } from "./brain-documents.mjs";
@@ -158,6 +159,20 @@ function facts(path, text) {
   };
 }
 
+// Git for Windows can enumerate files beneath a junction in ls-files, while
+// POSIX Git reports the link itself. Apply the same policy before coverage and
+// budgets: intentionally excluded links/targets are not missing evidence.
+async function excludedWorkingPath(root, path, canonicalRoot) {
+  let cursor = root;
+  for (const part of path.split("/")) {
+    cursor = resolve(cursor, part);
+    if ((await lstat(cursor)).isSymbolicLink()) return true;
+  }
+  const canonical = await realpath(resolve(root, path));
+  const rel = relative(canonicalRoot, canonical).replaceAll("\\", "/");
+  return !indexable(rel) || rel.startsWith("../");
+}
+
 // No project code, build hooks, external services or Git filters are executed.
 // HEAD blobs are pinned before reads; working copies are checked again below.
 export async function capture(root, { revision, previous } = {}) {
@@ -238,14 +253,26 @@ export async function capture(root, { revision, previous } = {}) {
     .filter((path) => indexable(path) && !isDocument(path))
     .slice(0, brainLimits.files);
   const priorities = new Map(priorityPaths.map((path, rank) => [path, rank]));
-  const candidates = tree
-    .filter((f) => indexable(f.path) && !deletedPaths.has(f.path))
-    .sort(
-      (a, b) =>
-        Number(!/(README|package\.json|AGENTS|\.toml$)/i.test(a.path)) -
-          Number(!/(README|package\.json|AGENTS|\.toml$)/i.test(b.path)) ||
-        a.path.localeCompare(b.path),
-    );
+  const eligible = [];
+  const canonicalRoot = revision ? null : await realpath(root);
+  for (const file of tree) {
+    if (!indexable(file.path) || deletedPaths.has(file.path)) continue;
+    if (!revision) {
+      try {
+        if (await excludedWorkingPath(root, file.path, canonicalRoot)) continue;
+      } catch (error) {
+        // An unavailable candidate remains an omission, not a policy exclusion.
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+    eligible.push(file);
+  }
+  const candidates = eligible.sort(
+    (a, b) =>
+      Number(!/(README|package\.json|AGENTS|\.toml$)/i.test(a.path)) -
+        Number(!/(README|package\.json|AGENTS|\.toml$)/i.test(b.path)) ||
+      a.path.localeCompare(b.path),
+  );
   const documents = candidates
     .filter((f) => isDocument(f.path))
     .sort(
@@ -287,99 +314,89 @@ export async function capture(root, { revision, previous } = {}) {
     if (coverage.omissions.length < 100)
       coverage.omissions.push({ path: file.path, reason });
   };
-  // Documentation has an independent budget. Code can never crowd out a wiki.
-  for (const file of ordered()) {
-    const document = isDocument(file.path);
-    const bucket = document ? coverage.documents : coverage.code;
-    const fileLimit = document
-      ? brainLimits.documentFileBytes
-      : brainLimits.fileBytes;
-    const byteLimit = document ? brainLimits.documentBytes : brainLimits.bytes;
-    if (
-      bucket.indexed >= (document ? brainLimits.documents : brainLimits.files)
-    ) {
-      omit(file, "file budget");
-      continue;
-    }
-    if (file.size > fileLimit) {
-      omit(file, "file too large");
-      continue;
-    }
-    let raw;
-    try {
-      if (!revision) {
-        const canonical = await realpath(resolve(root, file.path));
-        const rel = relative(await realpath(root), canonical).replaceAll(
-          "\\",
-          "/",
-        );
-        if (!indexable(rel) || rel.startsWith("../")) {
-          omit(file, "excluded or outside project");
-          continue;
-        }
-        let cursor = root,
-          linked = false;
-        for (const part of file.path.split("/")) {
-          cursor = resolve(cursor, part);
-          if ((await lstat(cursor)).isSymbolicLink()) {
-            linked = true;
-            break;
-          }
-        }
-        if (linked) {
-          omit(file, "symlink");
-          continue;
-        }
-      }
-      raw = revision
-        ? previous?.files[file.path]?.object === file.object
-          ? previous.files[file.path].text
-          : await git(root, ["cat-file", "blob", file.object])
-        : await safeRead(root, file.path, fileLimit);
-    } catch (error) {
-      if (error.code === "ENOENT") {
-        omit(file, "missing file");
+  const blobs = new GitBlobs(root);
+  try {
+    // Documentation has an independent budget. Code can never crowd out a wiki.
+    for (const file of ordered()) {
+      const document = isDocument(file.path);
+      const bucket = document ? coverage.documents : coverage.code;
+      const fileLimit = document
+        ? brainLimits.documentFileBytes
+        : brainLimits.fileBytes;
+      const byteLimit = document
+        ? brainLimits.documentBytes
+        : brainLimits.bytes;
+      if (
+        bucket.indexed >= (document ? brainLimits.documents : brainLimits.files)
+      ) {
+        omit(file, "file budget");
         continue;
       }
-      throw error;
+      if (file.size > fileLimit) {
+        omit(file, "file too large");
+        continue;
+      }
+      let raw;
+      try {
+        if (!revision) {
+          if (await excludedWorkingPath(root, file.path, canonicalRoot)) {
+            omit(file, "path became excluded during snapshot");
+            continue;
+          }
+        }
+        raw = revision
+          ? previous?.files[file.path]?.object === file.object
+            ? previous.files[file.path].text
+            : await blobs.read(file.object, file.size, fileLimit)
+          : await safeRead(root, file.path, fileLimit);
+      } catch (error) {
+        if (error.code === "ENOENT") {
+          omit(file, "missing file");
+          continue;
+        }
+        throw error;
+      }
+      if (
+        raw === null ||
+        raw.includes("\0") ||
+        Buffer.byteLength(raw) + (document ? documentBytes : codeBytes) >
+          byteLimit
+      ) {
+        omit(
+          file,
+          raw === null
+            ? "file too large"
+            : raw.includes("\0")
+              ? "binary"
+              : "byte budget",
+        );
+        continue;
+      }
+      bytes += Buffer.byteLength(raw);
+      if (document) documentBytes += Buffer.byteLength(raw);
+      else codeBytes += Buffer.byteLength(raw);
+      bucket.indexed++;
+      if (document && /(?:^|\/)wiki\//i.test(file.path))
+        coverage.wiki.indexed++;
+      const text = redact(raw),
+        hash = digest(text);
+      if (document)
+        for (const match of text.matchAll(
+          /[a-zA-Z0-9_./@-]+\.(?:[cm]?[jt]sx?|py|rs|go|java|kt|cs|rb|php|swift|sql|ya?ml|json)\b/g,
+        ))
+          referencedPaths.add(match[0].replace(/^\.\//, ""));
+      files[file.path] =
+        previous?.files[file.path]?.hash === hash
+          ? { ...previous.files[file.path], object: file.object || null }
+          : {
+              hash,
+              object: file.object || null,
+              text,
+              ...facts(file.path, text),
+            };
     }
-    if (
-      raw === null ||
-      raw.includes("\0") ||
-      Buffer.byteLength(raw) + (document ? documentBytes : codeBytes) >
-        byteLimit
-    ) {
-      omit(
-        file,
-        raw === null
-          ? "file too large"
-          : raw.includes("\0")
-            ? "binary"
-            : "byte budget",
-      );
-      continue;
-    }
-    bytes += Buffer.byteLength(raw);
-    if (document) documentBytes += Buffer.byteLength(raw);
-    else codeBytes += Buffer.byteLength(raw);
-    bucket.indexed++;
-    if (document && /(?:^|\/)wiki\//i.test(file.path)) coverage.wiki.indexed++;
-    const text = redact(raw),
-      hash = digest(text);
-    if (document)
-      for (const match of text.matchAll(
-        /[a-zA-Z0-9_./@-]+\.(?:[cm]?[jt]sx?|py|rs|go|java|kt|cs|rb|php|swift|sql|ya?ml|json)\b/g,
-      ))
-        referencedPaths.add(match[0].replace(/^\.\//, ""));
-    files[file.path] =
-      previous?.files[file.path]?.hash === hash
-        ? { ...previous.files[file.path], object: file.object || null }
-        : {
-            hash,
-            object: file.object || null,
-            text,
-            ...facts(file.path, text),
-          };
+  } finally {
+    await blobs.close();
   }
   const skipped =
     coverage.excluded + coverage.documents.skipped + coverage.code.skipped;

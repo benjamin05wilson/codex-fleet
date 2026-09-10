@@ -1,5 +1,7 @@
 # Focused workspace implementation — 6 September 2026
 
+> Historical checkpoint (6 September 2026). Test totals, local paths and package requirements below describe that checkpoint only. For current setup, bundled-tool design and platform acceptance use [README](README.md), [setup](docs/setup.md) and [platform status](docs/platform-status.md). The ignored home-review harness is not a reproducible product demo; use [the explicit fixture capture](docs/tour.md).
+
 The approved redesign is implemented as the 0.2 local macOS build. This is an implementation checkpoint, not a claim that every future Fleet feature is complete.
 
 ## Approved homepage — activated

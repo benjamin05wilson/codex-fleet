@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { get } from "node:http";
 import { createApp } from "../server/app.mjs";
+import { CodexAuth } from "../server/auth.mjs";
 import { createClient } from "../shared/client.mjs";
 
 test("all sensitive reads, HEAD and SSE require a capability; bootstrap is minimal", async (t) => {
@@ -160,4 +161,36 @@ test("client bootstrap is single-flight and a rejected mutation is never replaye
   assert.equal(writes, 1);
   await client.request("/search");
   assert.equal(bootstraps, 2);
+});
+
+// No retry masks an owned process still holding its cwd (the Windows EBUSY case).
+test("app close releases auth child and stdio before its data directory is removed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fleet-capability-close-"));
+  let auth;
+  const app = await createApp({
+    dataDir: dir,
+    bin: fileURLToPath(new URL("./fixtures/codex.mjs", import.meta.url)),
+    authFactory: (bin, cwd, options) =>
+      (auth = new CodexAuth(bin, cwd, options)),
+  });
+  let closed = false;
+  try {
+    await auth.read(true);
+    const client = auth.client;
+    client.child.once("close", () => {
+      closed = true;
+    });
+    await app.close();
+    assert.equal(
+      closed,
+      true,
+      "child close, including stdio, must precede app close",
+    );
+    assert.equal(client.child.stdout.destroyed, true);
+    await assert.rejects(auth.connection(), /closed/);
+  } finally {
+    await app.close();
+    app.store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
