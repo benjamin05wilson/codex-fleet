@@ -59,6 +59,15 @@ export async function verify({
   output = resolve(root, ".fleet/demo-verification"),
   patterns = scenarios,
 } = {}) {
+  // Snapshot provenance before generated output itself dirties a tracked report.
+  const commit = (
+    await exec("git", ["rev-parse", "HEAD"], { cwd: root })
+  ).stdout.trim();
+  const dirty = !!(
+    await exec("git", ["status", "--porcelain"], {
+      cwd: root,
+    })
+  ).stdout.trim();
   await mkdir(output, { recursive: true });
   const sanitize = (s) =>
     s.split(root).join("<repo>/").split(os.tmpdir()).join("<temp>");
@@ -106,18 +115,11 @@ export async function verify({
       `${results.at(-1).passed ? "PASS" : "FAIL"} ${id}: ${selection.executedTests} executed test(s)`,
     );
   }
-  const commit = (
-    await exec("git", ["rev-parse", "HEAD"], { cwd: root })
-  ).stdout.trim();
-  const dirty = !!(
-    await exec("git", ["status", "--porcelain", "--untracked-files=no"], {
-      cwd: root,
-    })
-  ).stdout.trim();
   const report = {
     time: new Date().toISOString(),
     commit,
     dirty,
+    provenance: "commit and dirty status captured before verification",
     node: process.version,
     platform: process.platform,
     arch: process.arch,

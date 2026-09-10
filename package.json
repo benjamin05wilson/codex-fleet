@@ -30,7 +30,8 @@
     "test:codex": "node tests/live-codex.mjs",
     "demo:verify": "node scripts/verify-demo.mjs",
     "check": "npm test && npm run build",
-    "format": "prettier --write --ignore-unknown src server tests *.js *.json *.html public/*.css public/*.svg"
+    "format": "prettier --write --ignore-unknown src server tests *.js *.json *.html public/*.css public/*.svg",
+    "demo:capture": "npm run build && node scripts/capture-demo.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
@@ -58,5 +59,10 @@
   "allowScripts": {
     "electron@44.2.0": true,
     "node-pty@1.1.0": true
+  },
+  "description": "Local Codex-only coding-agent workspace built with JavaScript, React, Electron and SQLite",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/benjamin05wilson/codex-fleet.git"
   }
 }

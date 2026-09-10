@@ -1,0 +1,99 @@
+{
+  "time": "2026-09-10T16:28:19.619Z",
+  "commit": "3a80f098692a310224bb7857184750a763da1509",
+  "dirty": true,
+  "provenance": "commit and dirty status captured before verification",
+  "node": "v24.18.1",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osRelease": "25.6.0",
+  "transport": "explicit deterministic Codex protocol fixture",
+  "meaning": "Real Fleet system tests; scripted agent output. Process durations are not model throughput. Model-call and human-intervention counters are not instrumented.",
+  "results": [
+    {
+      "id": "durable-reconnection",
+      "expected": "worker survives daemon detach; reconnect does not duplicate a turn or usage",
+      "passed": true,
+      "executedTests": 1,
+      "selectedNames": [
+        "worker survives daemon detach; reconnect does not duplicate a turn or usage"
+      ],
+      "processElapsedMs": 3235,
+      "command": [
+        "node",
+        "--test",
+        "--test-reporter=./scripts/demo-reporter.mjs",
+        "--test-name-pattern=worker survives daemon detach; reconnect does not duplicate a turn or usage",
+        "tests/focused.test.mjs"
+      ]
+    },
+    {
+      "id": "approved-workflow",
+      "expected": "approved workflow executes once, validates dependencies, and proposes completion without accepting",
+      "passed": true,
+      "executedTests": 1,
+      "selectedNames": [
+        "approved workflow executes once, validates dependencies, and proposes completion without accepting"
+      ],
+      "processElapsedMs": 5133,
+      "command": [
+        "node",
+        "--test",
+        "--test-reporter=./scripts/demo-reporter.mjs",
+        "--test-name-pattern=approved workflow executes once, validates dependencies, and proposes completion without accepting",
+        "tests/focused.test.mjs"
+      ]
+    },
+    {
+      "id": "security-lifecycle",
+      "expected": "fixed file findings resolve and reappear when the defect returns",
+      "passed": true,
+      "executedTests": 1,
+      "selectedNames": [
+        "fixed file findings resolve and reappear when the defect returns"
+      ],
+      "processElapsedMs": 1373,
+      "command": [
+        "node",
+        "--test",
+        "--test-reporter=./scripts/demo-reporter.mjs",
+        "--test-name-pattern=fixed file findings resolve and reappear when the defect returns",
+        "tests/focused.test.mjs"
+      ]
+    },
+    {
+      "id": "terminal-ownership",
+      "expected": "interactive terminal requires a single owner and invalidates checks",
+      "passed": true,
+      "executedTests": 1,
+      "selectedNames": [
+        "interactive terminal requires a single owner and invalidates checks"
+      ],
+      "processElapsedMs": 1393,
+      "command": [
+        "node",
+        "--test",
+        "--test-reporter=./scripts/demo-reporter.mjs",
+        "--test-name-pattern=interactive terminal requires a single owner and invalidates checks",
+        "tests/focused.test.mjs"
+      ]
+    },
+    {
+      "id": "project-memory",
+      "expected": "context is project-isolated, ranked, bounded, and excludes unapproved proposals",
+      "passed": true,
+      "executedTests": 1,
+      "selectedNames": [
+        "context is project-isolated, ranked, bounded, and excludes unapproved proposals"
+      ],
+      "processElapsedMs": 462,
+      "command": [
+        "node",
+        "--test",
+        "--test-reporter=./scripts/demo-reporter.mjs",
+        "--test-name-pattern=context is project-isolated, ranked, bounded, and excludes unapproved proposals",
+        "tests/focused.test.mjs"
+      ]
+    }
+  ]
+}
