@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
+import { settleBrain } from "./helpers/settle-brain.mjs";
 
 if (!process.argv.includes("--run")) {
   console.log("Use --run for an isolated brain desktop smoke test.");
@@ -64,15 +65,13 @@ if (!process.argv.includes("--run")) {
       name: "Brain fixture",
     });
     await runtime.brain.drain();
-    let written;
-    for (let batch = 0; batch < 8; batch++) {
-      await runtime.brain.writer.drain();
-      await runtime.brain.drain();
-      written = (await runtime.brain.list(project, { scope: "project" })).find(
-        (n) => n.sourcePath === "wiki/Checkout.md",
-      );
-      if (written?.content.includes("A fixture wiki section")) break;
-    }
+    const { written } = await settleBrain(
+      runtime.brain,
+      project,
+      (note) =>
+        note.sourcePath === "wiki/Checkout.md" &&
+        note.content.includes("A fixture wiki section"),
+    );
     assert.match(written.content, /A fixture wiki section/);
     assert.doesNotMatch(written.content, /auto-written analysis/);
     assert.equal(runtime.brain.status(project).status, "complete");
