@@ -14,7 +14,7 @@ The badges track **main**, not an unmerged PR. Follow [core runs](https://github
 
 Both workflows run on pull requests, main pushes and manual dispatch. Server tests have a 90-second per-test deadline. Core check and Windows test steps also have a five-minute ceiling, since a completed test can still leak an event-loop handle beyond Node's per-test timeout. Timeouts fail jobs; there is no force-exit success or swallowed teardown error. Packaging retains its separate job budget.
 
-Development packages are unsigned, and macOS packages are not notarized. No published installer/release was verified for this readiness evidence on **10 September 2026**. Check [releases](https://github.com/benjamin05wilson/codex-fleet/releases) separately from Actions artifacts. Signing is not required for source inspection. Source licence choice and exact-bundle notices remain separate owner/distribution decisions; see [distribution inventory](distribution.md).
+Development packages are unsigned, and macOS packages are not notarized. No published installer/release was verified for this readiness evidence on **10 September 2026**. Check [releases](https://github.com/benjamin05wilson/codex-fleet/releases) separately from Actions artifacts. Signing is not required for source inspection. Fleet source uses the [MIT License](../LICENSE). Exact-bundle third-party notices remain a separate distribution requirement; see the [distribution inventory](distribution.md).
 
 ## Dated observations — 10 September 2026
 

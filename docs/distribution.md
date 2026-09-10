@@ -1,6 +1,6 @@
 # Source terms and third-party distribution inventory
 
-The owner has not yet selected Fleet's source licence. This pass leaves the licence unchanged and grants no additional rights. Public readability and package `private: true` are distinct from reuse permission. Source licence text/package metadata must be reconciled when the owner chooses terms.
+Fleet source is licensed under the [MIT License](../LICENSE), with copyright attributed to Benjamin Wilson. Package metadata declares `MIT`; `private: true` only prevents npm publication. Third-party dependencies and bundled tools retain their own licences and required notices.
 
 This inventory is a packaging work list, not a completed legal review or a claim that a distributable installer exists. Do not present an installer as ready until the **actual bundle** has been inspected and its notices retained. No installer was built in this pass.
 

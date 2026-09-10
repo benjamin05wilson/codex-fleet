@@ -65,5 +65,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/benjamin05wilson/codex-fleet.git"
-  }
+  },
+  "license": "MIT"
 }
