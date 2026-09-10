@@ -52,4 +52,4 @@ The product screenshots and run report are actual fixture evidence with their so
 
 [Setup and real tasks](docs/setup.md) · [Feature manual](docs/manual.md) · [Architecture](docs/architecture.md) · [Evidence tour](docs/tour.md) · [Third-party distribution inventory](docs/distribution.md)
 
-Source licence choice is pending the owner. No licence grant has been added by this readiness pass. `private: true` prevents npm publication; this repository is publicly readable. Dependency and bundled-tool notices are a separate distribution requirement.
+Fleet source is available under the [MIT License](LICENSE). `private: true` prevents npm publication. Third-party dependencies and bundled tools retain their own licences and notices; see the [distribution inventory](docs/distribution.md).
