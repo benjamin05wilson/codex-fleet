@@ -40,9 +40,9 @@ macOS-first portfolio project; **no published installer/release** is claimed. De
 
 | Platform | Current evidence | Distribution |
 | --- | --- | --- |
-| macOS | Local source tests/build and fixture product capture pass; prior CI desktop/browser smokes passed | Package design exists; no public release |
-| Windows 11 x64 | Prior native suite 39/39; following group hit cleanup EBUSY. Awaited lifecycle fix and regression added; native rerun pending | Prior packaging skipped; completion/launch unverified |
-| Linux | Prior Ubuntu core run cancelled; current native CI rerun pending | Core portability target, no desktop release |
+| macOS | Local checks/capture pass; PR run 34502515174 at e125997 passed core and desktop/browser smokes | Package design exists; no public release |
+| Windows 11 x64 | Original cleanup EBUSY repaired; current PR native suite passed and reached brain/worker checks. Full result pending | Prior packaging skipped; completion/launch unverified |
+| Linux | Obsolete core run hung/cancelled; fixture cleanup-order repair added, new CI result pending | Core portability target, no desktop release |
 
 [Exact run links, validation boundaries and CI gates](docs/platform-status.md). Historical counts and packaging requirements in [IMPLEMENTATION.md](IMPLEMENTATION.md) are dated checkpoints, not current acceptance status.
 

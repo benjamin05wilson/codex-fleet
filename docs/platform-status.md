@@ -4,15 +4,23 @@ This table separates execution evidence from packaging and publication. This rea
 
 | Platform | Source checks | Desktop smoke | Package generation / verification | Published release |
 | --- | --- | --- | --- | --- |
-| macOS | Local `npm run check`: 240 server passes, 2 platform skips; 113 UI passes; build passed | Local fixture capture passed. Prior CI brain/large graph/native browser passed | Not rerun in this pass; configured unsigned arm64 app bundles Node/Codex, uses system Git | None verified/published |
+| macOS | Local `npm run check`: 240 server passes, 2 platform skips; 113 UI passes; build passed | Local fixture capture passed. PR run 34502515174 at e125997 passed core and brain/large graph/native browser smokes | Not rerun in this pass; configured unsigned arm64 app bundles Node/Codex, uses system Git | None verified/published |
 | Windows 11 x64 | Prior 39 native tests passed; subsequent group 13/14, failed at directory cleanup with EBUSY | New-commit validation pending | Prior packaging skipped after failure; installer launch unverified | None |
 | Ubuntu | Prior `npm run check` cancelled, not a pass | Not a desktop release target | Not offered | None |
+
+Parent-confirmed current macOS evidence: [run 34502515174](https://github.com/benjamin05wilson/codex-fleet/actions/runs/34502515174), commit `e125997`: core checks and desktop/browser smokes passed. In the paired current Windows run, the formerly failing native suite passed and execution reached the brain/worker group; final result remains pending. Ubuntu was still running its core check when reported.
 
 Parent-observed baseline: [Windows run 34353874607](https://github.com/benjamin05wilson/codex-fleet/actions/runs/34353874607), [cross-platform run 34353874645](https://github.com/benjamin05wilson/codex-fleet/actions/runs/34353874645). These are attributed prior results, not this pass's executions. [Current workflows](https://github.com/benjamin05wilson/codex-fleet/actions) are the place to check later commits.
 
 ## First readiness PR run
 
 At core commit `bdeec8b9`, the parent reported new failures: Windows [run 34501522021](https://github.com/benjamin05wilson/codex-fleet/actions/runs/34501522021) timed out before the cleanup step because a 300ms MCP deadline could expire before HTTP work entered the fixture queue; macOS job `102953201538` missed the first edit immediately after native watcher registration. Commit `3a80f098` makes the MCP deadline deterministic after queue entry and uses an observed native readiness probe before the separate watched-edit assertion. The 18 affected tests passed locally. New native CI results remain required; this paragraph does not upgrade either platform to green.
+
+## Linux hang investigation and bounded gates
+
+The obsolete Ubuntu run stopped printing after discovery tests and was cancelled. Node emits file results in order, so that final printed line alone does not identify the stalled file. The next file, `first-use.test.mjs`, registered recursive directory removal before application teardown. Node after-hooks run in registration order: POSIX can unlink live journals before `app.close()` reconciles workers. Its fixture now owns app close, SQLite close and directory removal in that order. A regression keeps a real fixture worker active and asserts the journal exists at shutdown entry. Focused-test cleanup now awaits complete engine/Brain drains instead of a partial map check and fixed sleep. This is a concrete resource-ownership repair; native Linux rerun is still required to tie it conclusively to the observed hang.
+
+Core server tests now use a 90-second per-test timeout, matching the existing Windows lifecycle gate. Core check and Windows test steps also have a five-minute CI ceiling, because a completed test can still leak an event-loop handle beyond Node's per-test timeout. Timeouts fail the job; there is no force-exit success or swallowed teardown failure. The full job retains its separate packaging budget.
 
 ## Windows repair and acceptance gate
 

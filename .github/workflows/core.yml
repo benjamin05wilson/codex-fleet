@@ -25,6 +25,7 @@ jobs:
       - run: git config --global user.name "Fleet CI"
       - run: git config --global user.email "fleet-ci@example.invalid"
       - run: npm run check
+        timeout-minutes: 5
       - run: npm run demo:verify
       - name: macOS desktop brain smoke
         if: runner.os == 'macOS'

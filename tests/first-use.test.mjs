@@ -24,8 +24,23 @@ async function fixture(t) {
   const source = join(root, "source"),
     data = join(root, "data");
   await mkdir(source);
-  t.after(() => rm(root, { recursive: true, force: true }));
-  return { root, source, data };
+  const apps = [];
+  const createRuntime = async () => {
+    const app = await createApp({ dataDir: data, bin });
+    apps.push(app);
+    return app;
+  };
+  // One owner orders cleanup: after hooks run in registration order. Removing
+  // journals before app.close can strand durable workers during reconciliation.
+  t.after(async () => {
+    for (const app of apps.reverse()) {
+      await app.close();
+      assert.equal(app.engine.workers.size, 0);
+      app.store.close();
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+  return { root, source, data, createRuntime };
 }
 async function until(fn) {
   const end = Date.now() + 20000;
@@ -109,14 +124,10 @@ test("snapshot approval expires when source changes and excluded files cannot be
   );
 });
 test("idea setup starts one developer task, defers initial assessment and resumes reviewers afterwards", async (t) => {
-  const { source, data } = await fixture(t);
+  const { source, data, createRuntime } = await fixture(t);
   await writeFile(join(source, "README.md"), "# Existing source");
   const review = await reviewImport(source);
-  const app = await createApp({ dataDir: data, bin });
-  t.after(async () => {
-    await app.close();
-    app.store.close();
-  });
+  const app = await createRuntime();
   const input = {
     mode: "import",
     path: source,
@@ -149,12 +160,8 @@ test("idea setup starts one developer task, defers initial assessment and resume
   );
 });
 test("preview requires approval, owns its lifecycle and blocks concurrent worktree use", async (t) => {
-  const { root, data } = await fixture(t);
-  const app = await createApp({ dataDir: data, bin });
-  t.after(async () => {
-    await app.close();
-    app.store.close();
-  });
+  const { root, data, createRuntime } = await fixture(t);
+  const app = await createRuntime();
   const project = await app.addProject({
     mode: "create",
     parentPath: root,
@@ -198,4 +205,37 @@ test("preview requires approval, owns its lifecycle and blocks concurrent worktr
   assert.equal(app.previews.has(run.worktree), false);
   assert.equal(app.store.get("run", run.id).preview.status, "stopped");
   await assert.rejects(fetch(`http://127.0.0.1:${port}/`));
+});
+
+test("fixture shutdown retains a live worker's journal until ownership is released", async (t) => {
+  const { root, createRuntime } = await fixture(t);
+  const app = await createRuntime();
+  const project = await app.addProject({
+    mode: "create",
+    parentPath: root,
+    folderName: "cleanup-source",
+    gitApproved: true,
+  });
+  const run = app.engine.create(project.id, {
+    title: "Cleanup ownership",
+    prompt: "TEST_HANG",
+    sandbox: "read-only",
+  });
+  app.engine.queue(run.id);
+  await until(() => app.store.get("run", run.id).threadId);
+  const journal = join(
+    app.store.get("run", run.id).worker.directory,
+    "status.json",
+  );
+  const close = app.close;
+  app.close = async (...args) => {
+    // This fails deterministically if a directory-removal hook runs first,
+    // even on a POSIX filesystem that permits unlinking live worker files.
+    await assert.doesNotReject(
+      readFile(journal),
+      "worker journal must exist at shutdown entry",
+    );
+    await close(...args);
+    assert.equal(app.engine.workers.size, 0);
+  };
 });
