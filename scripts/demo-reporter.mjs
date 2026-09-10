@@ -1,0 +1,6 @@
+// Stable JSON Lines evidence from Node's structured test-runner events.
+export default async function* reporter(source) {
+  for await (const event of source)
+    if (["test:pass", "test:fail", "test:summary"].includes(event.type))
+      yield JSON.stringify(event) + "\n";
+}

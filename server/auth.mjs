@@ -24,6 +24,7 @@ export class CodexAuth {
     this.onSandboxReady = onSandboxReady;
   }
   async connection() {
+    if (this.closed) throw new Error("Authentication client is closed.");
     if (!this.connecting) {
       const client = this.factory();
       this.client = client;
@@ -197,7 +198,9 @@ export class CodexAuth {
     this.state.authenticated = false;
     this.onChange();
   }
-  close() {
-    this.client?.close();
+  async close() {
+    this.closed = true;
+    await this.client?.close();
+    await Promise.allSettled([this.connecting, this.reading, this.starting]);
   }
 }

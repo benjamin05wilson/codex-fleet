@@ -67,6 +67,6 @@ export async function discoverCodex(bin, cwd) {
       checkedAt: new Date().toISOString(),
     };
   } finally {
-    client.close();
+    await client.close();
   }
 }
