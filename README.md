@@ -1,5 +1,7 @@
 # Codex Fleet
 
+[![Core checks on main](https://github.com/benjamin05wilson/codex-fleet/actions/workflows/core.yml/badge.svg?branch=main)](https://github.com/benjamin05wilson/codex-fleet/actions/workflows/core.yml) [![Windows checks on main](https://github.com/benjamin05wilson/codex-fleet/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/benjamin05wilson/codex-fleet/actions/workflows/windows.yml)
+
 A local, **Codex-only** coding-agent workspace for isolated tasks, review evidence and project knowledge. **JavaScript · React · Electron · SQLite · Git worktrees · MCP.** Fleet coordinates execution; Codex supplies generation.
 
 ## See it before installing
@@ -34,17 +36,17 @@ npm run demo:capture
 
 Node 24+ and Git are required; capture also needs a graphical macOS/Windows environment and Electron. `demo:verify` is headless. Dependency installation and Electron's first launch require network access; the fixture itself uses only loopback and explicit fixture executables. Capture creates a disposable repository/profile under `.cache`, runs a real local check, saves two product screenshots and removes its owned state. It never connects to the normal Fleet daemon. See [complete setup, cache settings and real Codex path](docs/setup.md).
 
-## Current platform status
+## Platform scope and checks
 
-macOS-first portfolio project; **no published installer/release** is claimed. Development packages are unsigned; macOS packages are not notarized.
+macOS-first portfolio project. The badges show **main-branch CI**, while a pull request's checks describe its proposed changes. [Latest checks and dated evidence](docs/platform-status.md) distinguish source tests, desktop smokes and packaging. No published installer/release is claimed; development packages are unsigned and macOS packages are not notarized.
 
-| Platform | Current evidence | Distribution |
+| Platform | Verification gate | Distribution scope |
 | --- | --- | --- |
-| macOS | Local checks/capture pass; PR run 34502515174 at e125997 passed core and desktop/browser smokes | Package design exists; no public release |
-| Windows 11 x64 | Native/auth/cleanup gates passed; Brain indexing fixes added after later failures. Full rerun pending | Prior packaging skipped; completion/launch unverified |
-| Linux | f2b11bf passed core checks and demo verification after fixture cleanup repair | Core portability target, no desktop release |
+| macOS | Core server/UI checks, production build, fixture verification, Electron brain/large-graph/native-browser smokes | Configured arm64 development app; packaging is a separate action |
+| Windows 11 x64 | Native runtime, lifecycle/coverage regressions, UI/build/smokes, NSIS package and branding checks | Configured unsigned x64 installer; generation does not establish installer launch |
+| Linux | Core server/UI checks, build and fixture verification | Core portability target; no desktop release |
 
-[Exact run links, validation boundaries and CI gates](docs/platform-status.md). Historical counts and packaging requirements in [IMPLEMENTATION.md](IMPLEMENTATION.md) are dated checkpoints, not current acceptance status.
+The product screenshots and run report are actual fixture evidence with their source commit recorded. They demonstrate Fleet mechanisms, not platform-wide compatibility or model performance. Historical counts in [IMPLEMENTATION.md](IMPLEMENTATION.md) are dated checkpoints.
 
 ## Read further
 
