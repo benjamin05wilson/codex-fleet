@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fork } from "node:child_process";
+import childProcess, { fork } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { once } from "node:events";
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -120,3 +121,67 @@ test(
     }
   },
 );
+
+test("self PID migration never probes externally and still denies reentrant ownership", async (t) => {
+  const dir = await fixture(t);
+  const probe = t.mock.method(childProcess, "execFileSync", () => {
+    throw new Error("external process probe unavailable");
+  });
+  syncBuiltinESMExports();
+  try {
+    await writeFile(join(dir, "daemon.lock"), String(process.pid));
+    const lease = acquireDaemonLock(dir);
+    try {
+      assert.equal(
+        JSON.parse(await readFile(join(dir, "daemon.lock"))).nonce,
+        lease.owner.nonce,
+      );
+      assert.throws(() => acquireDaemonLock(dir), {
+        code: "FLEET_ALREADY_RUNNING",
+      });
+      assert.equal(probe.mock.callCount(), 0);
+    } finally {
+      lease.release();
+    }
+  } finally {
+    probe.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("foreign PID probe errors fail closed, preserve metadata and release SQLite ownership", async (t) => {
+  const dir = await fixture(t);
+  const metadata = String(process.ppid);
+  assert.notEqual(process.ppid, process.pid);
+  const failure = Object.assign(
+    new Error("external process probe unavailable"),
+    { code: "ETIMEDOUT" },
+  );
+  const probe = t.mock.method(childProcess, "execFileSync", () => {
+    throw failure;
+  });
+  syncBuiltinESMExports();
+  try {
+    await writeFile(join(dir, "daemon.lock"), metadata);
+    assert.throws(
+      () => acquireDaemonLock(dir),
+      (error) => error === failure,
+    );
+    assert.equal(probe.mock.callCount(), 1);
+    assert.equal(await readFile(join(dir, "daemon.lock"), "utf8"), metadata);
+    // A second acquisition must reach the probe: the failed one released SQLite.
+    probe.mock.mockImplementation(() => 'node "/fixture/server/index.mjs"');
+    assert.throws(() => acquireDaemonLock(dir), {
+      code: "FLEET_ALREADY_RUNNING",
+    });
+    assert.equal(probe.mock.callCount(), 2);
+    assert.equal(await readFile(join(dir, "daemon.lock"), "utf8"), metadata);
+    probe.mock.mockImplementation(() => "unrelated-process");
+    const lease = acquireDaemonLock(dir);
+    lease.release();
+    assert.equal(probe.mock.callCount(), 3);
+  } finally {
+    probe.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
