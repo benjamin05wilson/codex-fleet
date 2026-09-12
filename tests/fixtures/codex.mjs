@@ -79,6 +79,7 @@ if (process.argv.includes("app-server")) {
         await writeFile(
           "policy.json",
           JSON.stringify({
+            prompt: request.params.input[0].text,
             thread: threadOptions,
             turn: {
               sandboxPolicy: request.params.sandboxPolicy,

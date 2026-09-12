@@ -356,14 +356,28 @@ test("all sandbox policies map exactly and full access cannot silently lose its 
   assert.ok(args.includes('sandbox_mode="danger-full-access"'));
   assert.ok(args.includes('approval_policy="never"'));
 });
-test("worker sends full-access policy to the deterministic fixture on both new and resumed turns", async (t) => {
+test("worker aligns prompt permissions and sandbox on new, resumed and permission-changed turns", async (t) => {
   const { app } = await fixture(t);
   const run = await quickSession(app, {
     approved: true,
     sandbox: "danger-full-access",
     yoloApproved: true,
   });
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  const modes = [
+    "danger-full-access",
+    "danger-full-access",
+    "workspace-write",
+    "read-only",
+    "danger-full-access",
+  ];
+  for (let attempt = 1; attempt <= modes.length; attempt++) {
+    const sandbox = modes[attempt - 1];
+    if (attempt > 1)
+      updateSessionOptions(app, run.id, {
+        approved: true,
+        sandbox,
+        yoloApproved: sandbox === "danger-full-access",
+      });
     app.engine.queue(run.id, "TEST_POLICY");
     const deadline = Date.now() + 15000;
     while (
@@ -377,9 +391,35 @@ test("worker sends full-access policy to the deterministic fixture on both new a
     const policy = JSON.parse(
       await readFile(join(ready.worktree, "policy.json"), "utf8"),
     );
-    assert.equal(policy.thread.sandbox, "danger-full-access");
+    assert.equal(policy.thread.sandbox, sandbox);
     assert.equal(policy.thread.approvalPolicy, "never");
-    assert.deepEqual(policy.turn.sandboxPolicy, { type: "dangerFullAccess" });
+    assert.deepEqual(
+      policy.turn.sandboxPolicy,
+      sandboxPolicy(ready.worktree, sandbox),
+    );
     assert.equal(policy.turn.approvalPolicy, "never");
+    assert.match(
+      policy.prompt,
+      /supersedes earlier Fleet-generated permission instructions/,
+    );
+    if (sandbox === "danger-full-access") {
+      assert.match(
+        policy.prompt,
+        /install software and modify files outside this working folder when needed for the user's authorized task/,
+      );
+      assert.doesNotMatch(
+        policy.prompt,
+        /Do not read credentials or modify files outside this working folder/,
+      );
+      assert.match(policy.prompt, /unless the user explicitly requests it/);
+    } else {
+      assert.match(
+        policy.prompt,
+        /Do not read credentials or modify files outside this working folder/,
+      );
+      assert.doesNotMatch(policy.prompt, /YOLO full access is enabled/);
+      if (sandbox === "read-only")
+        assert.match(policy.prompt, /do not modify files or install software/);
+    }
   }
 });

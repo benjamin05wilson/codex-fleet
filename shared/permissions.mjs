@@ -40,3 +40,12 @@ export function validatePermissions(input) {
     throw new Error("YOLO is only available for independent chats.");
   return sandbox;
 }
+
+export function turnPermissionInstructions(run) {
+  const sandbox = validatePermissions(run);
+  const policy =
+    sandbox === "danger-full-access"
+      ? "YOLO full access is enabled with the user's acknowledgement. You may run commands, access the network, install software and modify files outside this working folder when needed for the user's authorized task. The working folder is a starting location, not an access boundary. Do not expose secrets; access credentials only when necessary for the user's authorized task. Do not push, deploy, merge into the source repository, or commit unless the user explicitly requests it. Otherwise leave changes for human review. OS permissions still apply."
+      : `Do not push, deploy, merge into the source repository, or commit. Leave changes for human review. Do not read credentials or modify files outside this working folder.${sandbox === "read-only" ? " This is a read-only turn: do not modify files or install software." : " Use the configured workspace sandbox for commands."}`;
+  return `Current Fleet permission policy for this turn (supersedes earlier Fleet-generated permission instructions):\n${policy}`;
+}

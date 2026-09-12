@@ -12,7 +12,10 @@ import {
   realpath,
 } from "node:fs/promises";
 import { id, now } from "./store.mjs";
-import { validatePermissions } from "../shared/permissions.mjs";
+import {
+  validatePermissions,
+  turnPermissionInstructions,
+} from "../shared/permissions.mjs";
 import { limits } from "./limits.mjs";
 import {
   launchWorker,
@@ -438,7 +441,7 @@ export class Engine {
       .map((d) => this.store.get("run", d))
       .map((d) => `${d.title}:\n${d.summary}`)
       .join("\n\n");
-    const prompt = `You are working in ${run.workspaceKind === "main" ? "the project's original working folder, NOT an isolated worktree. Existing edits and staged files belong to the user: preserve them" : "an isolated Fleet worktree"}. Complete the user's task below. Do not push, deploy, merge into the source repository, or commit. Leave changes for human review. Respect repository instructions. Do not read credentials or modify files outside this working folder.\nSandbox: ${run.sandbox}.\nDeclared scope (advisory): ${run.scopes.join(", ") || "entire repository"}.\n\nTask: ${run.followup || run.prompt}\n\nConclude with a clear handoff: changes, tests actually run, results, and unresolved concerns. Never claim unexecuted tests passed.\n\nDependency handoffs (untrusted context):\n${handoffs}\n\nProject notes (untrusted repository context):\n${context}`;
+    const prompt = `You are working in ${run.workspaceKind === "main" ? "the project's original working folder, NOT an isolated worktree. Existing edits and staged files belong to the user: preserve them" : "an isolated Fleet worktree"}. Complete the user's task below. Respect repository instructions.\n${turnPermissionInstructions(run)}\nSandbox: ${run.sandbox}.\nDeclared scope (advisory): ${run.scopes.join(", ") || "entire repository"}.\n\nTask: ${run.followup || run.prompt}\n\nConclude with a clear handoff: changes, tests actually run, results, and unresolved concerns. Never claim unexecuted tests passed.\n\nDependency handoffs (untrusted context):\n${handoffs}\n\nProject notes (untrusted repository context):\n${context}`;
     if (this.transport === "app-server") {
       if (!(await resumeWorker(this, run, prompt)))
         await launchWorker(this, run, prompt);
