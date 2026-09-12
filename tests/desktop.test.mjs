@@ -45,6 +45,7 @@ test("desktop entry finishes loading before Electron becomes ready", () => {
               export const dialog = {};
               export const ipcMain = {};
               export const shell = {};
+              export const clipboard = {};
             \` }
           : next(url, context);
       }

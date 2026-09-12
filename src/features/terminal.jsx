@@ -123,7 +123,7 @@ export function TerminalView({ run, act, standalone = false }) {
       {!standalone && (
         <div className="terminal-mode">
           <strong>{main ? "Project shell" : "Worktree shell"}</strong>
-          <small>Interactive local shell · exclusive write access</small>
+          <small>Interactive local shell · single-client controls</small>
           {session && <Button onClick={close}>Close shell</Button>}
         </div>
       )}

@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Check, Copy, Clock3 } from "lucide-react";
 import "../chat.css";
+import { copyText } from "../clipboard.js";
 
 export function CopyButton({ text, label = "Copy" }) {
   const [status, setStatus] = useState("");
@@ -16,7 +17,7 @@ export function CopyButton({ text, label = "Copy" }) {
       aria-label={label}
       onClick={async () => {
         try {
-          await navigator.clipboard.writeText(text);
+          await copyText(text);
           setStatus("Copied");
         } catch {
           setStatus("Copy failed");

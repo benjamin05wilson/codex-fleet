@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld(
   Object.freeze({
     platform: process.platform,
     version: "0.2.0",
+    writeClipboard: (text) => ipcRenderer.invoke("fleet:write-clipboard", text),
     chooseRepository: () => ipcRenderer.invoke("fleet:choose-repository"),
     openSignIn: (url) => ipcRenderer.invoke("fleet:open-sign-in", url),
     nativeBrowser: (input) => ipcRenderer.invoke("fleet:native-browser", input),

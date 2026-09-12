@@ -3893,7 +3893,7 @@ test("keyboard jump navigation opens project brain", async () => {
   expect(screen.queryByRole("button", { name: "Edit note" })).toBeNull();
 });
 
-async function renderSlashChat(status = "review") {
+async function renderSlashChat(status = "review", overrides = {}) {
   const run = {
     id: "slash-chat",
     projectId: "one",
@@ -3908,6 +3908,7 @@ async function renderSlashChat(status = "review") {
     files: [],
     dependencies: [],
     usage: {},
+    ...overrides,
   };
   const fetchMock = vi.fn(async (url) => ({
     ok: true,
@@ -4166,4 +4167,25 @@ test("project removal identifies each active blocker including hidden reviewers 
     screen.getByRole("button", { name: "Remove project", exact: true }),
   );
   expect(onRemove).toHaveBeenCalledOnce();
+});
+
+test("chat sends a follow-up while its worktree shell remains open", async () => {
+  const { input, fetchMock, user } = await renderSlashChat("review", {
+    shellOpen: true,
+  });
+  await user.type(input, "Continue with the terminal open");
+  const send = screen.getByRole("button", {
+    name: "Send follow-up",
+    exact: true,
+  });
+  expect(send.disabled).toBe(false);
+  await user.click(send);
+  await waitFor(() => expect(input.value).toBe(""));
+  const request = fetchMock.mock.calls.find(([url]) => url.endsWith("/start"));
+  expect(JSON.parse(request[1].body).prompt).toBe(
+    "Continue with the terminal open",
+  );
+  expect(
+    fetchMock.mock.calls.some(([url]) => url.includes("/terminal/close")),
+  ).toBe(false);
 });

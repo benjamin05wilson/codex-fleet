@@ -601,7 +601,6 @@ function RunDetail({
     !run.teamInitial &&
     !run.workflowId &&
     !run.reviewOf &&
-    !run.shellOpen &&
     !["starting", "running", "stopping"].includes(run.preview?.status);
   const editMessage = (text) => {
     setEditingMessage((current) => ({ draft: current?.draft ?? followup }));

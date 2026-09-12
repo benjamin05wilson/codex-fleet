@@ -225,7 +225,7 @@ export class Engine {
           "This plan has exhausted its approved retry limit. Create and approve a revised plan.",
         );
     }
-    this.assertIdleWorktree(run);
+    this.assertIdleWorktree(run, { allowShell: true });
     if (
       !["draft", "paused", "interrupted", "failed", "review"].includes(
         run.status,
@@ -342,7 +342,7 @@ export class Engine {
     let run = this.store.get("run", key);
     if (run.sessionKind === "terminal")
       throw new Error("Terminal sessions cannot launch Codex.");
-    this.assertIdleWorktree(run);
+    this.assertIdleWorktree(run, { allowShell: true });
     const project = this.store.get("project", run.projectId);
     if (!run.worktree) {
       run = this.store.patch(
@@ -1122,7 +1122,10 @@ export class Engine {
       throw e;
     }
   }
-  assertIdleWorktree(run, { allowTeamReaders = true } = {}) {
+  assertIdleWorktree(
+    run,
+    { allowTeamReaders = true, allowShell = false } = {},
+  ) {
     validatePermissions(run);
     if (run.deletedAt)
       throw new Error("Restore this chat from Trash before using it.");
@@ -1130,7 +1133,7 @@ export class Engine {
       throw new Error(
         "Stop the preview before coding, reviewing or accepting this worktree.",
       );
-    if (this.terminals?.has(run.worktree))
+    if (!allowShell && this.terminals?.has(run.worktree))
       throw new Error(
         "Close the worktree shell before starting another writer or reviewing changes.",
       );

@@ -622,7 +622,7 @@ test("API duplicate identities replay a result and reject changed payloads", asy
     assert.equal((await send("/another/path")).status, 409);
   });
 });
-test("interactive terminal requires a single owner and invalidates checks", async (t) => {
+test("interactive terminal retains ownership and validation locks while chat continues", async (t) => {
   const w = await setup(t),
     engine = w.createEngine(),
     terminals = new Terminals(engine);
@@ -637,7 +637,12 @@ test("interactive terminal requires a single owner and invalidates checks", asyn
   await until(() => w.store.get("run", run.id).status === "review");
   const shell = await terminals.open(w.store.get("run", run.id), "desktop");
   assert.equal(w.store.get("run", run.id).validation, null);
-  assert.throws(() => engine.queue(run.id, "More"), /Close the worktree shell/);
+  engine.queue(run.id, "More");
+  await until(() => w.store.get("run", run.id).status === "review");
+  assert.equal(w.store.get("run", run.id).attempt, 2);
+  assert.equal(w.store.get("run", run.id).shellOpen, true);
+  assert.equal(terminals.get(run.id).lease, shell.lease);
+  await assert.rejects(engine.validate(run.id), /Close the worktree shell/);
   await assert.rejects(
     terminals.open(w.store.get("run", run.id), "cli"),
     /another client/,

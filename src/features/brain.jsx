@@ -10,6 +10,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { BrainGraph, noteTarget } from "./brain-graph.jsx";
 import "../brain.css";
+import { copyText } from "../clipboard.js";
 import {
   ArrowUpRight,
   ArrowRight,
@@ -564,8 +565,7 @@ function BrainView({
         )}
         <button
           onClick={() =>
-            navigator.clipboard
-              .writeText(data.vaultPath)
+            copyText(data.vaultPath)
               .then(() =>
                 notify("Vault path copied. Open this folder in Obsidian."),
               )

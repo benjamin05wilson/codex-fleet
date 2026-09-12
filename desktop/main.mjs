@@ -6,7 +6,9 @@ import {
   dialog,
   ipcMain,
   shell,
+  clipboard,
 } from "electron";
+import { writeClipboard } from "./clipboard.mjs";
 import { createNativeBrowser } from "./native-browser.mjs";
 import { createNativePageAgent } from "./native-page-agent.mjs";
 import { connectNativeAgent } from "./native-agent-bridge.mjs";
@@ -79,6 +81,9 @@ else {
         (_web, _permission, callback) => callback(false),
       );
       session.defaultSession.setPermissionCheckHandler(() => false);
+      ipcMain.handle("fleet:write-clipboard", (event, text) =>
+        writeClipboard(event, text, window, url, clipboard),
+      );
       ipcMain.handle("fleet:choose-repository", async (event) => {
         if (
           !window ||
