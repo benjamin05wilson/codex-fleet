@@ -1121,32 +1121,6 @@ export class Engine {
   }
   assertIdleWorktree(run, { allowTeamReaders = true } = {}) {
     validatePermissions(run);
-    if (
-      run.sandbox === "danger-full-access" &&
-      (this.terminals?.opening.size || this.previews?.opening.size)
-    )
-      throw new Error(
-        "Wait for the opening shell or preview, then close it before starting YOLO.",
-      );
-    if (
-      this.store
-        .list("run")
-        .some(
-          (other) =>
-            other.id !== run.id &&
-            !other.deletedAt &&
-            (run.sandbox === "danger-full-access" ||
-              other.sandbox === "danger-full-access") &&
-            ([...ACTIVE, "queued"].includes(other.status) ||
-              other.shellOpen ||
-              ["starting", "running", "stopping"].includes(
-                other.preview?.status,
-              )),
-        )
-    )
-      throw new Error(
-        "YOLO runs need exclusive access. Stop other Fleet agents, shells and previews first.",
-      );
     if (run.deletedAt)
       throw new Error("Restore this chat from Trash before using it.");
     if (this.previews?.has(run.worktree))

@@ -264,28 +264,82 @@ test("YOLO requires explicit approval and is excluded from managed tasks and tea
   );
   assert.equal(app.store.get("run", run.id).sandbox, "read-only");
 });
-test("YOLO cannot overlap another Fleet agent, shell, or preview even in a different project", async (t) => {
-  const { app } = await fixture(t);
+test("YOLO messages can queue alongside unrelated agents, shells and previews in either permission mode", async (t) => {
+  const { app, root } = await fixture(t);
+  // Exercise message admission without launching fixture workers for each case.
+  t.mock.method(app.engine, "tick", async () => {});
   const a = await quickSession(app, {
     approved: true,
     sandbox: "danger-full-access",
     yoloApproved: true,
   });
   const b = await quickSession(app, { approved: true });
-  for (const active of [
-    { status: "running" },
-    { status: "queued" },
-    { shellOpen: true },
-    { preview: { status: "running" } },
+  for (const [sender, other] of [
+    [a, b],
+    [b, a],
   ]) {
-    app.store.put("run", { ...b, ...active });
-    assert.throws(() => app.engine.assertIdleWorktree(a), /exclusive/);
+    for (const activity of [
+      { status: "running" },
+      { status: "queued" },
+      { status: "review" },
+      { shellOpen: true },
+      { preview: { status: "starting" } },
+      { preview: { status: "running" } },
+      { preview: { status: "stopping" } },
+    ]) {
+      app.store.put("run", { ...sender, worktree: join(root, "sender") });
+      app.store.put("run", {
+        ...other,
+        ...activity,
+        worktree: join(root, "other"),
+      });
+      const queued = app.engine.queue(sender.id, "Continue the conversation");
+      assert.equal(queued.status, "queued");
+      assert.equal(queued.followup, "Continue the conversation");
+    }
+  }
+  app.store.put("run", a);
+  app.store.put("run", b);
+});
+
+test("YOLO retains same-folder agent, shell and preview locks without blocking other folders", async (t) => {
+  const { app, root } = await fixture(t);
+  const a = await quickSession(app, {
+    approved: true,
+    sandbox: "danger-full-access",
+    yoloApproved: true,
+  });
+  const b = await quickSession(app, { approved: true });
+  const path = join(root, "shared-folder");
+  const run = app.store.patch("run", a.id, { worktree: path });
+  for (const status of ["running", "queued", "validating", "accepting"]) {
+    app.store.put("run", { ...b, status, worktree: path });
+    assert.throws(
+      () => app.engine.assertIdleWorktree(run),
+      /Another session is using this worktree/,
+    );
   }
   app.store.put("run", b);
-  app.store.patch("run", a.id, { status: "running" });
-  assert.throws(() => app.engine.assertIdleWorktree(b), /exclusive/);
-  app.store.put("run", a);
-  app.engine.assertIdleWorktree(a);
+  for (const [service, message] of [
+    [app.engine.terminals, /Close the worktree shell/],
+    [app.engine.previews, /Stop the preview/],
+  ]) {
+    // Opening reservations must also stay scoped to the folder.
+    service.opening.add(join(root, "other-folder"));
+    assert.doesNotThrow(() => app.engine.assertIdleWorktree(run));
+    service.opening.add(path);
+    assert.throws(() => app.engine.assertIdleWorktree(run), message);
+    service.opening.clear();
+    const session = { worktree: path, status: "running" };
+    service.sessions.set(b.id, session);
+    try {
+      assert.throws(() => app.engine.assertIdleWorktree(run), message);
+      session.worktree = join(root, "other-folder");
+      assert.doesNotThrow(() => app.engine.assertIdleWorktree(run));
+    } finally {
+      service.sessions.delete(b.id);
+    }
+  }
 });
 test("all sandbox policies map exactly and full access cannot silently lose its acknowledgement", () => {
   assert.deepEqual(sandboxPolicy("/tmp", "read-only"), { type: "readOnly" });
