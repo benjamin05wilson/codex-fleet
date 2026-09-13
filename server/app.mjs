@@ -1,3 +1,4 @@
+import { openEventStream } from "./event-stream.mjs";
 import { createServer } from "node:http";
 import { randomBytes, createHash } from "node:crypto";
 import { readFile, mkdir } from "node:fs/promises";
@@ -593,46 +594,7 @@ export async function createApp({
           return;
         }
         if (req.method === "GET" && path === "/api/stream") {
-          res.writeHead(200, {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-store",
-            Connection: "keep-alive",
-          });
-          streams.add(res);
-          let cursor = Number(
-            req.headers["last-event-id"] || url.searchParams.get("after") || 0,
-          );
-          if (!Number.isFinite(cursor) || cursor < 0) cursor = 0;
-          let batch;
-          do {
-            batch = store.replay(cursor);
-            for (const e of batch) {
-              res.write(
-                `id: ${e.seq}\nevent: change\ndata: ${JSON.stringify(e)}\n\n`,
-              );
-              cursor = e.seq;
-            }
-          } while (batch.length === 500);
-          const listener = (change) => {
-            if (change.kind !== "event")
-              res.write(`event: change\ndata: ${JSON.stringify(change)}\n\n`);
-          };
-          const eventListener = (e) =>
-            res.write(
-              `id: ${e.seq}\nevent: change\ndata: ${JSON.stringify(e)}\n\n`,
-            );
-          store.changes.on("change", listener);
-          store.changes.on("event", eventListener);
-          const heartbeat = setInterval(
-            () => res.write(": keepalive\n\n"),
-            15000,
-          );
-          req.on("close", () => {
-            clearInterval(heartbeat);
-            store.changes.off("change", listener);
-            store.changes.off("event", eventListener);
-            streams.delete(res);
-          });
+          openEventStream(req, res, store, streams);
           return;
         }
         if (path.startsWith("/api/auth/")) {
@@ -1228,7 +1190,7 @@ export async function createApp({
       await browsers.close();
       brainTools.close();
       await terminals.close();
-      for (const stream of streams) stream.end();
+      for (const stream of streams) stream.close();
       await engine.shutdown({ preserveWorkers });
       await brain.close();
       // File edits can leave an in-flight security scan after its watcher stops.
