@@ -29,15 +29,6 @@ export function validatePermissions(input) {
     throw new Error(
       "Explicitly acknowledge full-access YOLO permissions first.",
     );
-  if (
-    sandbox === "danger-full-access" &&
-    (input.teamId ||
-      input.teamRole ||
-      input.workflowId ||
-      input.missionId ||
-      input.reviewOf)
-  )
-    throw new Error("YOLO is only available for independent chats.");
   return sandbox;
 }
 
@@ -45,7 +36,9 @@ export function turnPermissionInstructions(run) {
   const sandbox = validatePermissions(run);
   const policy =
     sandbox === "danger-full-access"
-      ? "YOLO full access is enabled with the user's acknowledgement. You may run commands, access the network, install software and modify files outside this working folder when needed for the user's authorized task. The working folder is a starting location, not an access boundary. Do not expose secrets; access credentials only when necessary for the user's authorized task. Do not push, deploy, merge into the source repository, or commit unless the user explicitly requests it. Otherwise leave changes for human review. OS permissions still apply."
-      : `Do not push, deploy, merge into the source repository, or commit. Leave changes for human review. Do not read credentials or modify files outside this working folder.${sandbox === "read-only" ? " This is a read-only turn: do not modify files or install software." : " Use the configured workspace sandbox for commands."}`;
-  return `Current Fleet permission policy for this turn (supersedes earlier Fleet-generated permission instructions):\n${policy}`;
+      ? "YOLO full access is enabled with the user's acknowledgement. Run commands, access the network, install software and modify files as needed for the user's authorized task. The working folder is a starting location, not an access boundary. OS permissions still apply."
+      : sandbox === "read-only"
+        ? "Use the configured read-only sandbox. If the user's task needs additional access, request it through the approval flow."
+        : "Use the configured workspace sandbox. If the user's task needs additional access, request it through the approval flow.";
+  return `Current Fleet permission policy for this turn (supersedes earlier Fleet-generated permission instructions):\n${policy}\nFollow the user's requested scope, including authorized commits, pushes, deployments and credential use. Do not expose secrets. Leave unrequested publication or unrelated changes for the user to decide.`;
 }

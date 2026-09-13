@@ -56,9 +56,7 @@ export function SessionOptions({ run, act, onClose }) {
               <option value="workspace-write">
                 Allow edits in the working folder
               </option>
-              {!run.teamId && !run.teamRole && !run.missionId && (
-                <option value="danger-full-access">YOLO · full access</option>
-              )}
+              <option value="danger-full-access">YOLO · full access</option>
             </select>
           </Field>
           <p className="muted-copy">
@@ -243,7 +241,7 @@ export function QuickSession({
           >
             <textarea
               rows={3}
-              maxLength={30000}
+
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder="What do you want to work on?"

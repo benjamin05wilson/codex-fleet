@@ -2,6 +2,10 @@ import http from "node:http";
 import net from "node:net";
 import { lookup } from "node:dns/promises";
 
+const loopback = new net.BlockList();
+loopback.addSubnet("127.0.0.0", 8, "ipv4");
+loopback.addAddress("::1", "ipv6");
+
 export function browserURL(value, forbiddenPorts = []) {
   if (typeof value !== "string" || value.length > 4096)
     throw new Error("Enter an HTTP or HTTPS URL.");
@@ -50,8 +54,7 @@ export function publicAddress(address) {
   );
 }
 
-// Public domains are unrestricted; only the chosen local preview is permitted.
-// DNS is resolved and pinned before connecting; public names cannot rebind to LAN/loopback.
+// Resolve and pin destinations, including LAN and VPN hosts. Fleet IPC stays private.
 export async function browserDestination(
   value,
   localOrigins,
@@ -62,16 +65,21 @@ export async function browserDestination(
   const host = url.hostname.replace(/^\[|\]$/g, "");
   let address, family;
   if (["localhost", "127.0.0.1", "::1"].includes(host)) {
-    if (!localOrigins.includes(url.origin))
-      throw new Error("Only the selected local preview is accessible.");
     address = host === "::1" ? "::1" : "127.0.0.1";
     family = host === "::1" ? 6 : 4;
   } else {
     const records = await resolveHost(host, { all: true });
-    if (!records.length || records.some((r) => !publicAddress(r.address)))
-      throw new Error("Private and reserved network addresses are blocked.");
+    if (!records.length) throw new Error("Host has no network address.");
     ({ address, family } = records[0]);
   }
+  const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+  if (
+    forbiddenPorts.includes(port) &&
+    loopback.check(address, net.isIP(address) === 6 ? "ipv6" : "ipv4")
+  )
+    throw new Error(
+      "Fleet's internal services cannot be opened in the project browser.",
+    );
   return {
     url,
     address,

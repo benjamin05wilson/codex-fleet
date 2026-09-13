@@ -517,12 +517,8 @@ async function runNative() {
       await waitFor(() => web.getURL().endsWith("/next") && !web.isLoading());
       await action("back");
       await waitFor(() => web.getURL() === pageURL + "/" && !web.isLoading());
-      assert.equal(
-        internalHits,
-        0,
-        "private-network fetch must not reach the listener",
-      );
-      assert.equal(popupWindows, 0, "page popup must not open a native window");
+      assert.ok(internalHits > 0, "private-network fetch reaches the listener");
+      await waitFor(() => popupWindows === 1);
       await web.executeJavaScript(`(async () => {
         for (let i = 0; i < 2; i++) await (await fetch('/cached-asset')).text();
       })()`);
@@ -542,7 +538,7 @@ async function runNative() {
         height: 500,
       });
       console.log(
-        "PASS: direct native input/scroll, navigation/back, resize, no preload/Node in pages, blocked file/internal navigation, blocked private HTTP and popups.",
+        "PASS: direct native input/scroll, navigation/back, resize, no preload/Node in pages, blocked file/internal navigation, private HTTP and popups permitted.",
       );
       if (process.argv.includes("--public")) {
         await action("navigate", { url: "https://www.shopify.com" });

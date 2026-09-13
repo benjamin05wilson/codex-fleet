@@ -195,7 +195,8 @@ test("preview requires approval, owns its lifecycle and blocks concurrent worktr
   for (const bad of [80, 65536, "https://example.com", 4317])
     assert.throws(() => previewPort(bad, [4317]));
   await app.previews.start(run, { port, command, approved: true });
-  assert.throws(() => app.engine.queue(run.id), /Stop the preview/);
+  t.mock.method(app.engine, "tick", async () => {});
+  assert.equal(app.engine.queue(run.id).status, "queued");
   await until(() => app.store.get("run", run.id).preview.status === "running");
   assert.equal(
     await fetch(`http://127.0.0.1:${port}/`).then((r) => r.text()),

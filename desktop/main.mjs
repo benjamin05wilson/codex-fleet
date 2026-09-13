@@ -10,7 +10,7 @@ import {
 } from "electron";
 import { writeClipboard } from "./clipboard.mjs";
 import { createNativeBrowser } from "./native-browser.mjs";
-import { createNativePageAgent } from "./native-page-agent.mjs";
+import { createNativeTabs } from "./native-tabs.mjs";
 import { connectNativeAgent } from "./native-agent-bridge.mjs";
 import { windowChrome, removeWindowsMenu } from "./window-chrome.mjs";
 import { spawn, execFileSync } from "node:child_process";
@@ -256,8 +256,22 @@ else {
             browserURL,
             proxyFactory: createBrowserProxy,
             connectAgent: (details) => {
-              const agent = createNativePageAgent({
+              const agent = createNativeTabs({
                 ...details,
+                createWindow: () => {
+                  const popup = new BrowserWindow({
+                    width: 1100,
+                    height: 800,
+                    webPreferences: {
+                      session: details.web.session,
+                      sandbox: true,
+                      contextIsolation: true,
+                      nodeIntegration: false,
+                    },
+                  });
+                  details.guardWeb(popup.webContents);
+                  return popup;
+                },
                 browserURL,
                 validateAction: validateNativeAction,
               });

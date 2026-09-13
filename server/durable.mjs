@@ -35,6 +35,7 @@ export async function launchWorker(engine, run, prompt) {
     cursor: 0,
     createdAt: Date.now(),
     persistent: true,
+    runtimeVersion: 2,
     brainTools: !!brain,
     idle: false,
     model: run.model || "",
@@ -273,7 +274,11 @@ export async function resumeWorker(engine, run, prompt) {
     return false;
   // Upgrade an idle pre-brain worker by resuming its saved thread in a new
   // worker. Never interrupt an active turn or pretend old workers have tools.
-  if (engine.brainTools && !run.worker.brainTools) return false;
+  if (
+    run.worker.runtimeVersion !== 2 ||
+    (engine.brainTools && !run.worker.brainTools)
+  )
+    return false;
   run = { ...run, worker: engine.store.get("run", run.id).worker };
   const attempt = run.attempt + 1;
   state.idle = false;

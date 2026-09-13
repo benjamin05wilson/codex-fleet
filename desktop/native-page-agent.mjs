@@ -1,3 +1,4 @@
+import { createNativeDOM } from "./native-dom.mjs";
 // Fixed, application-owned DOM operations run in an isolated JS world. Tool
 // input is data, never JavaScript, CSS selectors, file paths or debugger calls.
 export function pageOperation(input) {
@@ -11,8 +12,7 @@ export function pageOperation(input) {
       ""
     )
       .trim()
-      .replace(/\s+/g, " ")
-      .slice(0, 180);
+      .replace(/\s+/g, " ");
   const signature = (el) =>
     JSON.stringify([
       el.tagName,
@@ -28,7 +28,6 @@ export function pageOperation(input) {
     for (const el of document.querySelectorAll(
       'a[href],button,input,textarea,select,summary,[role="button"],[role="link"],[contenteditable="true"]',
     )) {
-      if (i >= 180) break;
       const r = el.getBoundingClientRect();
       if (!r.width || !r.height || getComputedStyle(el).visibility === "hidden")
         continue;
@@ -53,11 +52,11 @@ export function pageOperation(input) {
     return {
       title: document.title,
       url: location.href,
-      text: (document.body?.innerText || "").slice(0, 22000),
+      text: document.body?.innerText || "",
       elements: lines,
       links,
       scope:
-        "Main document only; iframe and closed-shadow controls are not exposed. Input values are omitted. References expire after navigation or another snapshot. Valid HTTP(S) link destinations appear in links and can be passed to navigate if a click is obscured; navigate still applies Fleet's network policy.",
+        "Input values are omitted. References expire after navigation or another snapshot.",
     };
   }
   if (input.action === "scroll") {
@@ -84,8 +83,6 @@ export function pageOperation(input) {
   const el = target.el;
   if (el.disabled || el.getAttribute("aria-disabled") === "true")
     throw new Error("Element is disabled.");
-  if (el instanceof HTMLInputElement && el.type === "file")
-    throw new Error("Select files yourself in the native browser.");
   el.scrollIntoView({
     block: "center",
     inline: "nearest",
@@ -131,13 +128,18 @@ export function createNativePageAgent({
   browserURL,
   forbiddenPorts,
   validateAction,
+  createDOM = createNativeDOM,
 }) {
+  const nativeDOM = createDOM(web);
   let disposed = false,
     nonce = 0,
     generation = 0,
     attached = false;
   const navigate = (_event, _url, _inPlace, main) => {
-    if (main !== false) generation++;
+    if (main !== false) {
+      generation++;
+      nativeDOM.clear();
+    }
   };
   web.on("did-start-navigation", navigate);
   const alive = () => {
@@ -194,8 +196,10 @@ export function createNativePageAgent({
           throw new Error("Screenshot exceeds the tool size limit.");
         return { image };
       }
+      if (["click", "fill", "upload"].includes(input.action))
+        return nativeDOM.execute(input);
       if (input.action === "press") {
-        if (!attached) {
+        if (!web.debugger.isAttached()) {
           web.debugger.attach("1.3");
           attached = true;
         }
@@ -238,6 +242,11 @@ export function createNativePageAgent({
           "Page navigated during snapshot. Take a fresh snapshot.",
         );
       if (input.action === "snapshot") {
+        Object.assign(result, await nativeDOM.snapshot());
+        if (generation !== before) {
+          nativeDOM.clear();
+          throw new Error("Page navigated. Take a fresh snapshot.");
+        }
         result.links = Object.fromEntries(
           Object.entries(result.links || {}).flatMap(([ref, value]) => {
             try {
@@ -253,8 +262,9 @@ export function createNativePageAgent({
     },
     close() {
       disposed = true;
+      nativeDOM.close();
       web.removeListener("did-start-navigation", navigate);
-      if (attached && !web.isDestroyed() && web.debugger.isAttached())
+      if (!web.isDestroyed() && web.debugger.isAttached())
         web.debugger.detach();
     },
   };

@@ -192,21 +192,14 @@ export function sessionDefaults(input = {}) {
 export async function quickSession(app, input) {
   if (input.approved !== true)
     throw new Error("Confirm the session permissions before starting.");
-  if (
-    input.prompt !== undefined &&
-    (typeof input.prompt !== "string" || input.prompt.length > 30000)
-  )
-    throw new Error("Instruction must be at most 30,000 characters.");
+  if (input.prompt !== undefined && typeof input.prompt !== "string")
+    throw new Error("Instruction must be text.");
   const prompt = input.prompt?.trim() || "";
   let project = input.projectId
     ? app.store.get("project", input.projectId)
     : null;
   const saved = newSessionDefaults(app.store, project);
   const defaults = sessionDefaults({ ...saved, ...input });
-  if (defaults.useTeam && defaults.sandbox === "danger-full-access")
-    throw new Error(
-      "YOLO is only available for independent chats, not managed team tasks.",
-    );
   if (defaults.useTeam && (!project || !app.teams.get(project.id)?.enabled))
     throw new Error("Enable the project team before using its Developer.");
   if (defaults.useTeam && !prompt)
@@ -544,23 +537,10 @@ export function updateSessionOptions({ store, engine }, key, input) {
   if (run.sessionKind === "terminal")
     throw new Error("Terminal sessions do not have Codex settings.");
   if (
-    run.shellOpen ||
-    ["starting", "running", "stopping"].includes(run.preview?.status)
-  )
-    throw new Error(
-      "Stop the shell or preview before changing conversation settings.",
-    );
-  if (
-    !["draft", "paused", "interrupted", "failed", "review"].includes(
-      run.status,
-    ) ||
-    run.teamInitial ||
-    (run.teamRole && run.teamRole !== "developer") ||
-    run.workflowId ||
-    run.reviewOf
+    !["draft", "paused", "interrupted", "failed", "review"].includes(run.status)
   )
     throw new Error("Settings can only change on an idle coding conversation.");
-  engine.assertIdleWorktree(run);
+  engine.assertIdleWorktree(run, { allowShell: true, allowPreview: true });
   engine.releaseIdleWorker(key);
   const defaults = sessionDefaults({ ...run, ...input, useTeam: false });
   const updated = store.patch("run", key, {

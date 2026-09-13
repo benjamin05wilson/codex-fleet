@@ -12,10 +12,12 @@ import { validateNativeAction } from "../shared/native-browser-actions.mjs";
 function fixture(result) {
   const web = new EventEmitter();
   web.isDestroyed = () => false;
+  web.debugger = { isAttached: () => false };
   web.getURL = () => "https://search.example/results";
   web.executeJavaScriptInIsolatedWorld = async () => ({ value: result });
   return createNativePageAgent({
     web,
+    createDOM: () => ({ snapshot: async () => result, clear() {}, close() {} }),
     browserURL,
     forbiddenPorts: [4317, 45678],
     validateAction: validateNativeAction,
@@ -125,7 +127,7 @@ test("native snapshot filtering does not replace navigate URL enforcement", asyn
   );
 });
 
-test("password fields can be filled for sign-in without returning their value; file pickers stay manual", (t) => {
+test("password fields can be filled for sign-in without returning their value", (t) => {
   const dom = new JSDOM(
     '<label for="password">Password</label><input id="password" type="password"><input type="file" aria-label="Upload">',
     { url: "https://login.example/", pretendToBeVisual: true },
@@ -200,6 +202,6 @@ test("password fields can be filled for sign-in without returning their value; f
         text: "/tmp/file",
         generation: 0,
       }),
-    /Select files yourself/,
+    /obscured|filename|file input|InvalidState/i,
   );
 });

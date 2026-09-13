@@ -600,8 +600,7 @@ function RunDetail({
     !teamReviewer &&
     !run.teamInitial &&
     !run.workflowId &&
-    !run.reviewOf &&
-    !["starting", "running", "stopping"].includes(run.preview?.status);
+    !run.reviewOf;
   const editMessage = (text) => {
     setEditingMessage((current) => ({ draft: current?.draft ?? followup }));
     setFollowup(text);
@@ -747,16 +746,13 @@ function RunDetail({
       setHistoryLoading(false);
     }
   };
-  const canConfigure =
-    !teamReviewer &&
-    !run.teamInitial &&
-    !run.workflowId &&
-    !run.reviewOf &&
-    ["draft", "paused", "interrupted", "failed", "review"].includes(
-      run.status,
-    ) &&
-    !run.shellOpen &&
-    !["starting", "running", "stopping"].includes(run.preview?.status);
+  const canConfigure = [
+    "draft",
+    "paused",
+    "interrupted",
+    "failed",
+    "review",
+  ].includes(run.status);
   const showTool = async (tool) => {
     setTab(tool);
     if (tool === "details") {
@@ -1231,6 +1227,38 @@ function RunDetail({
               </button>
             </div>
           )}
+          {(run.pendingApprovals || []).map((request) => (
+            <div className="notice" key={request.requestId}>
+              <strong>Codex requests permission</strong>
+              <pre>{JSON.stringify(request.params, null, 2)}</pre>
+              <Button
+                type="button"
+                onClick={() =>
+                  act(() =>
+                    api(`/runs/${run.id}/approval`, "POST", {
+                      requestId: request.requestId,
+                      approved: true,
+                    }),
+                  )
+                }
+              >
+                Approve
+              </Button>
+              <Button
+                type="button"
+                onClick={() =>
+                  act(() =>
+                    api(`/runs/${run.id}/approval`, "POST", {
+                      requestId: request.requestId,
+                      approved: false,
+                    }),
+                  )
+                }
+              >
+                Deny
+              </Button>
+            </div>
+          ))}
           {!teamReviewer &&
             !run.teamInitial &&
             [
@@ -1297,7 +1325,7 @@ function RunDetail({
                 <textarea
                   ref={composerRef}
                   rows={2}
-                  maxLength={30000}
+
                   autoFocus={run.waitingForTask}
                   aria-controls={
                     commandMatches.length ? `chat-commands-${runId}` : undefined

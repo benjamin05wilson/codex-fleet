@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { watch, realpathSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
+  link,
   mkdir,
   lstat,
   readFile,
@@ -144,14 +145,8 @@ export class Engine {
       throw new Error("Open this project folder again before creating a chat.");
     if (!input.title?.trim() || !input.prompt?.trim())
       throw new Error("A title and task are required.");
-    if (input.title.length > 160 || input.prompt.length > 30_000)
-      throw new Error("Task is too long.");
+    if (input.title.length > 160) throw new Error("Task is too long.");
     const sandbox = validatePermissions(input);
-    if (
-      sandbox === "danger-full-access" &&
-      (input.workflowId || input.missionId)
-    )
-      throw new Error("YOLO is only available for independent chats.");
     const dependencies = input.dependencies || [];
     if (!Array.isArray(dependencies)) throw new Error("Invalid dependencies.");
     for (const key of dependencies) {
@@ -197,11 +192,7 @@ export class Engine {
     if (run.sessionKind === "terminal")
       throw new Error("This is a terminal, not a Codex conversation.");
     if (run.waitingForTask) {
-      if (
-        typeof followup !== "string" ||
-        !followup.trim() ||
-        followup.length > 30000
-      )
+      if (typeof followup !== "string" || !followup.trim())
         throw new Error("Give this conversation its first instruction.");
     }
     if (run.teamInitial && !teamManaged)
@@ -225,7 +216,7 @@ export class Engine {
           "This plan has exhausted its approved retry limit. Create and approve a revised plan.",
         );
     }
-    this.assertIdleWorktree(run, { allowShell: true });
+    this.assertIdleWorktree(run, { allowShell: true, allowPreview: true });
     if (
       !["draft", "paused", "interrupted", "failed", "review"].includes(
         run.status,
@@ -342,7 +333,7 @@ export class Engine {
     let run = this.store.get("run", key);
     if (run.sessionKind === "terminal")
       throw new Error("Terminal sessions cannot launch Codex.");
-    this.assertIdleWorktree(run, { allowShell: true });
+    this.assertIdleWorktree(run, { allowShell: true, allowPreview: true });
     const project = this.store.get("project", run.projectId);
     if (!run.worktree) {
       run = this.store.patch(
@@ -521,16 +512,46 @@ export class Engine {
         });
       }),
     );
-    state.timeout = setTimeout(
-      () => this.stop(key, "paused"),
-      limits.timeoutMs,
-    );
+    if (run.timeoutMs > 0)
+      state.timeout = setTimeout(() => this.stop(key, "paused"), run.timeoutMs);
     child.send({
       bin: this.bin,
       args: codexArgs(run),
       cwd: run.worktree,
       prompt,
     });
+  }
+  async answerApproval(key, input) {
+    const run = this.store.get("run", key);
+    const request = (run.pendingApprovals || []).find(
+      (r) => r.requestId === input.requestId,
+    );
+    if (
+      !request ||
+      typeof input.approved !== "boolean" ||
+      !run.worker ||
+      run.status !== "running"
+    )
+      throw new Error("This approval request is no longer active.");
+    const temporary = join(run.worker.directory, `approval-${id()}.tmp`);
+    await writeFile(
+      temporary,
+      JSON.stringify({
+        identity: run.worker.identity,
+        requestId: input.requestId,
+        approved: input.approved,
+      }),
+      { mode: 0o600 },
+    );
+    try {
+      await link(
+        temporary,
+        join(run.worker.directory, `approval-${input.requestId}.json`),
+      );
+    } finally {
+      await unlink(temporary);
+    }
+    return { submitted: true };
   }
   onEvent(key, raw, state) {
     if (state.durable && !ownsWorker(this, key, state)) return;
@@ -547,6 +568,25 @@ export class Engine {
       if (event.message) event.message = signInMessage;
     }
     this.store.event(run.projectId, key, event.type || "codex.event", event);
+    if (event.type === "approval.requested")
+      this.store.patch("run", key, {
+        pendingApprovals: [
+          ...(run.pendingApprovals || []),
+          {
+            requestId: event.requestId,
+            method: event.method,
+            params: event.params,
+          },
+        ],
+      });
+    if (event.type === "approval.resolved")
+      this.store.patch("run", key, {
+        pendingApprovals: (run.pendingApprovals || []).filter(
+          (r) => r.requestId !== event.requestId,
+        ),
+      });
+    if (["turn.completed", "turn.failed", "worker.exit"].includes(event.type))
+      this.store.patch("run", key, { pendingApprovals: [] });
     if (event.type === "thread.started")
       this.store.patch("run", key, { threadId: event.thread_id });
     if (event.type === "item.completed" && event.item?.type === "agent_message")
@@ -1124,12 +1164,12 @@ export class Engine {
   }
   assertIdleWorktree(
     run,
-    { allowTeamReaders = true, allowShell = false } = {},
+    { allowTeamReaders = true, allowShell = false, allowPreview = false } = {},
   ) {
     validatePermissions(run);
     if (run.deletedAt)
       throw new Error("Restore this chat from Trash before using it.");
-    if (this.previews?.has(run.worktree))
+    if (!allowPreview && this.previews?.has(run.worktree))
       throw new Error(
         "Stop the preview before coding, reviewing or accepting this worktree.",
       );

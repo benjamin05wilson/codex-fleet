@@ -59,6 +59,7 @@ export function createNativeBrowser({
     const c = current;
     if (!c) return;
     current = null;
+    for (const popup of c.popups) if (!popup.isDestroyed()) popup.destroy();
     if (!window.isDestroyed()) window.contentView.removeChildView(c.view);
     if (!c.view.webContents.isDestroyed())
       c.view.webContents.close({ waitForBeforeUnload: false });
@@ -95,11 +96,6 @@ export function createNativeBrowser({
       partition = session.fromPartition("fleet-native-" + randomUUID(), {
         cache: true,
       });
-      partition.setPermissionRequestHandler((_web, _permission, callback) =>
-        callback(false),
-      );
-      partition.setPermissionCheckHandler(() => false);
-      partition.on("will-download", (event) => event.preventDefault());
       partition.webRequest.onBeforeRequest((details, callback) => {
         // Proxy pins DNS for HTTP(S)/WS(S). Never grant file://, custom schemes,
         // extension pages or access to Fleet itself, including from subframes.
@@ -142,14 +138,56 @@ export function createNativeBrowser({
         partition,
         error: "",
         visible: false,
+        popups: new Set(),
       };
       current = c;
       view.setVisible(false);
       window.contentView.addChildView(view);
       const web = view.webContents;
+      const guardWeb = (page) => {
+        page.setWindowOpenHandler(({ url }) => {
+          try {
+            if (url !== "about:blank")
+              browserURL(url, [...forbidden, proxy.port]);
+            return {
+              action: "allow",
+              overrideBrowserWindowOptions: {
+                webPreferences: {
+                  session: partition,
+                  sandbox: true,
+                  contextIsolation: true,
+                  nodeIntegration: false,
+                },
+              },
+            };
+          } catch {
+            return { action: "deny" };
+          }
+        });
+        for (const event of [
+          "will-navigate",
+          "will-frame-navigate",
+          "will-redirect",
+        ])
+          page.on(event, (details, target) => {
+            try {
+              browserURL(details.url || target, [...forbidden, proxy.port]);
+            } catch {
+              details.preventDefault();
+              c.error = "Navigation blocked by the preview's network policy.";
+            }
+          });
+        page.on("will-attach-webview", (event) => event.preventDefault());
+        page.on("did-create-window", (popup) => {
+          c.popups.add(popup);
+          popup.once("closed", () => c.popups.delete(popup));
+          guardWeb(popup.webContents);
+        });
+      };
       if (connectAgent)
         c.disconnectAgent = connectAgent({
           web,
+          guardWeb,
           projectId: input.projectId,
           nativeId: c.id,
           forbiddenPorts: [...forbidden, proxy.port],
@@ -159,25 +197,7 @@ export function createNativeBrowser({
           },
         });
       web.setWebRTCIPHandlingPolicy("disable_non_proxied_udp");
-      web.setWindowOpenHandler(() => {
-        c.error =
-          "Pop-up windows are disabled in this preview. Open the link using the address bar.";
-        return { action: "deny" };
-      });
-      for (const event of [
-        "will-navigate",
-        "will-frame-navigate",
-        "will-redirect",
-      ])
-        web.on(event, (details, target) => {
-          try {
-            browserURL(details.url || target, [...forbidden, proxy.port]);
-          } catch {
-            details.preventDefault();
-            c.error = "Navigation blocked by the preview's network policy.";
-          }
-        });
-      web.on("will-attach-webview", (event) => event.preventDefault());
+      guardWeb(web);
       web.on("render-process-gone", () => {
         c.error = "Native renderer stopped. Close and reopen the preview.";
         hide();

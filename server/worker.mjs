@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { approvalMethods, approvalResponse } from "../shared/approval.mjs";
 // Detached execution owner. UI and daemon disconnects are not termination signals.
 import {
   readFileSync,
@@ -10,7 +12,6 @@ import {
   existsSync,
 } from "node:fs";
 import { join } from "node:path";
-import { limits } from "./limits.mjs";
 import { CodexClient, sandboxPolicy } from "./codex-client.mjs";
 import { redactValue, redact } from "./sentinel.mjs";
 import { validatePermissions } from "../shared/permissions.mjs";
@@ -142,12 +143,37 @@ process.on("unhandledRejection", (error) =>
 heartbeat({ finished: false });
 timer = setInterval(() => {
   heartbeat({ finished: false, idle });
+  for (const requestId of approvals.keys()) {
+    const answerPath = join(directory, `approval-${requestId}.json`);
+    if (existsSync(answerPath)) {
+      try {
+        const answer = JSON.parse(readFileSync(answerPath, "utf8"));
+        unlinkSync(answerPath);
+        const request = approvals.get(answer.requestId);
+        if (
+          request &&
+          answer.identity === config.identity &&
+          typeof answer.approved === "boolean"
+        ) {
+          client.send({
+            id: request.id,
+            result: approvalResponse(request, answer.approved),
+          });
+          approvals.delete(answer.requestId);
+          append({ type: "approval.resolved", requestId: answer.requestId });
+        }
+      } catch (error) {
+        append({ type: "worker.diagnostic", text: error.message });
+      }
+    }
+  }
   if (existsSync(join(directory, "stop"))) stop();
   if (idle && !commandBusy && existsSync(join(directory, "command.json")))
     resume().catch((error) =>
       finish(1, error?.stack || error?.message || String(error)),
     );
 }, 500);
+const approvals = new Map();
 let usage = {};
 const notification = ({ method, params: p }) => {
   if (method === "turn/started") {
@@ -228,6 +254,26 @@ const bindClient = (owned) => {
       finish(1, error.message);
   });
   owned.on("notification", notification);
+  owned.on("request", (request) => {
+    if (!approvalMethods.includes(request.method)) {
+      owned.send({
+        id: request.id,
+        error: {
+          code: -32601,
+          message: "Unsupported interactive request: " + request.method,
+        },
+      });
+      return;
+    }
+    const requestId = randomUUID();
+    approvals.set(requestId, request);
+    append({
+      type: "approval.requested",
+      requestId,
+      method: request.method,
+      params: redactValue(request.params),
+    });
+  });
 };
 const replaceClient = () => {
   const previous = client;
@@ -244,7 +290,7 @@ const replaceClient = () => {
 bindClient(client);
 const optionsFor = (run) => ({
   cwd: run.worktree,
-  approvalPolicy: "never",
+  approvalPolicy: run.sandbox === "danger-full-access" ? "never" : "on-request",
   sandbox: validatePermissions(run),
   developerInstructions:
     browserInstructions(!!config.browser) +
@@ -254,13 +300,6 @@ const optionsFor = (run) => ({
   config: {
     ...browserMcpConfig(config.browser).config,
     ...brainMcpConfig(config.brain).config,
-    // This is a Fleet-worker override, not a change to the user's Codex config.
-    // Desktop automation must not close/reconfigure Fleet to imitate browsing.
-    "mcp_servers.cua_repl": {
-      command: process.execPath,
-      args: ["--version"],
-      enabled: false,
-    },
   },
 });
 const startTurn = async (prompt, run) => {
@@ -268,12 +307,13 @@ const startTurn = async (prompt, run) => {
   usage = {};
   heartbeat({ finished: false, idle: false });
   clearTimeout(deadline);
-  deadline = setTimeout(stop, run.timeoutMs || limits.timeoutMs);
+  if (run.timeoutMs > 0) deadline = setTimeout(stop, run.timeoutMs);
   await client.request("turn/start", {
     threadId,
     input: [{ type: "text", text: prompt }],
     cwd: run.worktree,
-    approvalPolicy: "never",
+    approvalPolicy:
+      run.sandbox === "danger-full-access" ? "never" : "on-request",
     sandboxPolicy: sandboxPolicy(run.worktree, run.sandbox),
     ...(run.outputSchema ? { outputSchema: run.outputSchema } : {}),
   });
@@ -290,8 +330,7 @@ const resume = async () => {
       command.run?.id !== config.run.id ||
       command.run?.worktree !== config.run.worktree ||
       typeof command.prompt !== "string" ||
-      !command.prompt.trim() ||
-      command.prompt.length > 100_000
+      !command.prompt.trim()
     )
       throw new Error("Invalid durable worker command.");
     validatePermissions(command.run);
@@ -344,7 +383,7 @@ const bootstrap = async () => {
     }
     if (config.browser) {
       append({ type: "worker.phase", phase: "Connecting project browser" });
-      await verifyBrowserTool(client, nextThreadId);
+      await verifyBrowserTool(client, nextThreadId).catch(() => false);
     }
     return { result, threadId: nextThreadId };
   };

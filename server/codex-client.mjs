@@ -74,19 +74,15 @@ export class CodexClient extends EventEmitter {
         return;
       }
       if (message.method && message.id !== undefined) {
-        // No implicit escalation or automatic answers to permission requests.
-        this.send({
-          id: message.id,
-          error: {
-            code: -32000,
-            message:
-              "Fleet requires a new explicitly approved task for additional permissions.",
-          },
-        });
-        this.emit("notification", {
-          method: "fleet/permissionDenied",
-          params: { method: message.method },
-        });
+        if (this.listenerCount("request")) this.emit("request", message);
+        else
+          this.send({
+            id: message.id,
+            error: {
+              code: -32601,
+              message: "This client has no request handler.",
+            },
+          });
       } else if (message.id !== undefined) {
         const pending = this.pending.get(message.id);
         if (!pending) return;

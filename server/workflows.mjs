@@ -1,3 +1,4 @@
+import { validatePermissions } from "../shared/permissions.mjs";
 import { id, now } from "./store.mjs";
 import { limits } from "./limits.mjs";
 export const templates = [
@@ -52,8 +53,7 @@ export class Workflows {
       !input.title.trim() ||
       input.title.length > 160 ||
       typeof input.objective !== "string" ||
-      !input.objective.trim() ||
-      input.objective.length > 30000
+      !input.objective.trim()
     )
       throw new Error("A workflow needs a title and objective.");
     const template = templates.find(
@@ -76,8 +76,7 @@ export class Workflows {
         !t.title.trim() ||
         t.title.length > 160 ||
         typeof t.prompt !== "string" ||
-        !t.prompt.trim() ||
-        t.prompt.length > 30000
+        !t.prompt.trim()
       )
         throw new Error("Each task needs a title and instruction.");
       if (
@@ -103,7 +102,11 @@ export class Workflows {
       title: input.title.trim(),
       objective: input.objective.trim(),
       templateId: template.id,
-      sandbox: template.sandbox,
+      sandbox: validatePermissions({
+        ...input,
+        sandbox: input.sandbox || template.sandbox,
+      }),
+      yoloApproved: input.yoloApproved === true,
       tasks: tasks.map((t) => ({
         ...t,
         scopes: t.scopes || [],
@@ -159,7 +162,7 @@ export class Workflows {
     }
     if (workflow.approvedAt) return workflow;
     const project = this.store.get("project", workflow.projectId);
-    if (workflow.sandbox === "workspace-write" && !project.validation)
+    if (workflow.sandbox !== "read-only" && !project.validation)
       throw new Error(
         "Set a project validation command before approving a coding workflow.",
       );
@@ -170,6 +173,7 @@ export class Workflows {
           title: t.title,
           prompt: `Approved objective:\n${workflow.objective}\n\nTask:\n${t.prompt}`,
           sandbox: workflow.sandbox,
+          yoloApproved: workflow.yoloApproved === true,
           scopes: t.scopes,
           workflowId: key,
           dependencies: t.dependencies.map((i) => runs[i].id),
@@ -229,7 +233,7 @@ export class Workflows {
         );
         for (const run of runs) {
           if (
-            run.sandbox === "workspace-write" &&
+            run.sandbox !== "read-only" &&
             run.status === "review" &&
             !run.validation
           )

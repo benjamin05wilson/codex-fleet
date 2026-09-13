@@ -254,7 +254,8 @@ export class NativeBrowserBroker {
       // closed page must fail, never silently operate on a replacement page.
       if (
         this.launcher &&
-        (input.action === "navigate" || this.sessions.has(c.projectId))
+        (["navigate", "new_tab"].includes(input.action) ||
+          this.sessions.has(c.projectId))
       ) {
         await this.enqueue(
           this.launcher,
@@ -262,7 +263,9 @@ export class NativeBrowserBroker {
           {
             projectId: c.projectId,
             runId: c.runId,
-            ...(input.action === "navigate" ? { url: input.url } : {}),
+            ...(["navigate", "new_tab"].includes(input.action)
+              ? { url: input.url }
+              : {}),
           },
           scope,
         );

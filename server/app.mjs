@@ -1,3 +1,4 @@
+import { validatePermissions } from "../shared/permissions.mjs";
 import { openEventStream } from "./event-stream.mjs";
 import { createServer } from "node:http";
 import { randomBytes, createHash } from "node:crypto";
@@ -37,7 +38,7 @@ import { commandInvocation } from "../shared/platform.mjs";
 import { CodexAuth } from "./auth.mjs";
 
 const exec = promisify(execFile);
-async function body(req, maxBytes = 100_000) {
+async function body(req, maxBytes = 16 * 1024 * 1024) {
   if (req.fleetBody !== undefined) return req.fleetBody;
   let text = "";
   for await (const chunk of req) {
@@ -189,12 +190,9 @@ export async function createApp({
       input.firstTask &&
       (input.firstTask.approved !== true ||
         typeof input.firstTask.prompt !== "string" ||
-        !input.firstTask.prompt.trim() ||
-        input.firstTask.prompt.length > 30000)
+        !input.firstTask.prompt.trim())
     )
-      throw new Error(
-        "Approve a first task with an instruction of up to 30,000 characters.",
-      );
+      throw new Error("Approve a first task with a non-empty instruction.");
     const repo =
       input.mode === "import"
         ? await importProject(input, dataDir)
@@ -959,19 +957,11 @@ export async function createApp({
             if (
               input.tasks.some(
                 (t) =>
-                  !t.title?.trim() ||
-                  !t.prompt?.trim() ||
-                  t.title.length > 160 ||
-                  t.prompt.length > 30_000,
+                  !t.title?.trim() || !t.prompt?.trim() || t.title.length > 160,
               )
             )
               throw new Error("Every task needs a title and a valid prompt.");
-            if (
-              !["read-only", "workspace-write"].includes(
-                input.sandbox || "read-only",
-              )
-            )
-              throw new Error("Invalid sandbox.");
+            validatePermissions(input);
             const mission = store.put("mission", {
               id: id(),
               projectId: project.id,
@@ -987,6 +977,7 @@ export async function createApp({
                 prompt: `Mission: ${mission.title}\n${mission.objective}\n\nTask: ${task.prompt}`,
                 missionId: mission.id,
                 sandbox: input.sandbox || "read-only",
+                yoloApproved: input.yoloApproved === true,
                 dependencies: input.sequential && previous ? [previous] : [],
               });
               previous = run.id;
@@ -1004,7 +995,7 @@ export async function createApp({
           }
         }
         const runMatch = path.match(
-          /^\/api\/runs\/([^/]+)(?:\/(start|pause|cancel|diff|validate|accept|review|options|restore))?$/,
+          /^\/api\/runs\/([^/]+)(?:\/(start|pause|cancel|diff|validate|accept|review|options|approval|restore))?$/,
         );
         if (runMatch) {
           const key = runMatch[1];
@@ -1022,6 +1013,10 @@ export async function createApp({
           }
           if (req.method === "POST" && action === "restore") {
             send(restoreSession({ store, engine }, key));
+            return;
+          }
+          if (req.method === "POST" && action === "approval") {
+            send(await engine.answerApproval(key, await body(req)));
             return;
           }
           if (req.method === "POST" && action === "options") {

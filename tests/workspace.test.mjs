@@ -538,7 +538,9 @@ test("new-session API enforces CSRF and terminals own the actual project folder 
     t.after(() => subscription.dispose());
     for (const event of session.events) answerCursor(event.data);
   }
-  assert.throws(() => app.engine.queue(main.id, "Explain"), /shell/);
+  t.mock.method(app.engine, "tick", async () => {});
+  assert.equal(app.engine.queue(main.id, "Explain").status, "queued");
+  app.store.patch("run", main.id, { status: "draft" });
   assert.equal(
     (
       await post(`/runs/${terminal.id}/terminal/input`, {
@@ -619,7 +621,7 @@ test("explicit idle settings apply to the next turn and can be remembered withou
   const files = await sessionFiles(app.store.get("run", run.id));
   assert.ok(files.files.includes("artifact.txt"));
 });
-test("settings endpoint enforces consent, CSRF, busy-state and reviewer restrictions", async (t) => {
+test("settings endpoint enforces consent, CSRF, busy-state while allowing reviewer and open-shell settings", async (t) => {
   const { app } = await fixture(t);
   const run = await quickSession(app, { approved: true });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
@@ -640,11 +642,14 @@ test("settings endpoint enforces consent, CSRF, busy-state and reviewer restrict
   app.store.patch("run", run.id, { status: "running" });
   assert.throws(() => updateSessionOptions(app, run.id, options), /idle/);
   app.store.patch("run", run.id, { status: "draft", teamRole: "security" });
-  assert.throws(() => updateSessionOptions(app, run.id, options), /idle/);
+  assert.equal(
+    updateSessionOptions(app, run.id, options).sandbox,
+    "workspace-write",
+  );
   app.store.patch("run", run.id, { teamRole: null, shellOpen: true });
-  assert.throws(
-    () => updateSessionOptions(app, run.id, options),
-    /shell|terminal/i,
+  assert.equal(
+    updateSessionOptions(app, run.id, options).sandbox,
+    "workspace-write",
   );
   assert.equal(app.store.get("run", run.id).attempt, 0);
 });

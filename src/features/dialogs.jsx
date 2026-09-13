@@ -435,6 +435,7 @@ function RunDialog({ project, onClose, onSave, busy, team }) {
   const [title, setTitle] = useState(saved.title || "");
   const [prompt, setPrompt] = useState(saved.prompt || "");
   const [sandbox, setSandbox] = useState(saved.sandbox || "read-only");
+  const [yoloApproved, setYoloApproved] = useState(false);
   const [scopes, setScopes] = useState(saved.scopes || "");
   const [model, setModel] = useState(saved.model || "");
   const [start, setStart] = useState(true);
@@ -460,6 +461,7 @@ function RunDialog({ project, onClose, onSave, busy, team }) {
               title,
               prompt,
               sandbox,
+              yoloApproved,
               scopes: scopes
                 .split(",")
                 .map((s) => s.trim())
@@ -485,7 +487,7 @@ function RunDialog({ project, onClose, onSave, busy, team }) {
           <textarea
             required
             rows={5}
-            maxLength={30000}
+
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             placeholder="Describe the outcome, constraints, and what a good result looks like…"
@@ -513,6 +515,22 @@ function RunDialog({ project, onClose, onSave, busy, team }) {
             {sandbox === "workspace-write" && <Check size={14} />}
           </button>
         </div>
+        <Field label="Full access">
+          <label>
+            <input
+              type="checkbox"
+              checked={sandbox === "danger-full-access" && yoloApproved}
+              required={sandbox === "danger-full-access"}
+              onChange={(e) => {
+                setSandbox(
+                  e.target.checked ? "danger-full-access" : "workspace-write",
+                );
+                setYoloApproved(e.target.checked);
+              }}
+            />
+            Allow YOLO access, including commands and files outside this project
+          </label>
+        </Field>
         <details className="advanced">
           <summary>
             Context & model <ChevronDown size={13} />
@@ -623,6 +641,7 @@ function MissionDialog({ onClose, onSave, busy }) {
   ]);
   const [sequential, setSequential] = useState(false);
   const [sandbox, setSandbox] = useState("read-only");
+  const [yoloApproved, setYoloApproved] = useState(false);
   return (
     <Dialog
       wide
@@ -633,7 +652,14 @@ function MissionDialog({ onClose, onSave, busy }) {
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          onSave({ title, objective, tasks, sequential, sandbox });
+          onSave({
+            title,
+            objective,
+            tasks,
+            sequential,
+            sandbox,
+            yoloApproved,
+          });
         }}
       >
         <Field label="Mission">
@@ -727,7 +753,19 @@ function MissionDialog({ onClose, onSave, busy }) {
             >
               <option value="read-only">Explore · read only</option>
               <option value="workspace-write">Build · workspace write</option>
+              <option value="danger-full-access">YOLO · full access</option>
             </select>
+            {sandbox === "danger-full-access" && (
+              <label>
+                <input
+                  type="checkbox"
+                  required
+                  checked={yoloApproved}
+                  onChange={(e) => setYoloApproved(e.target.checked)}
+                />
+                Allow full access for this mission
+              </label>
+            )}
           </Field>
         </div>
         <div className="dialog-actions">
@@ -843,9 +881,10 @@ function SettingsDialog({
           <div className="form-note">
             <Shield size={16} />
             {state.limits
-              ? `${state.limits.concurrency} parallel sessions. ${Math.round(state.limits.timeoutMs / 60000)}-minute attempt timeout. `
+              ? `${state.limits.concurrency} parallel sessions. ${state.limits.timeoutMs ? `${Math.round(state.limits.timeoutMs / 60000)}-minute attempt timeout.` : "No automatic turn timeout."} `
               : ""}
-            Workspace network disabled. No unattended approval escalation.
+            Standard sessions can request additional permissions. YOLO runs with
+            full access.
           </div>
           <div className="dialog-actions">
             <Button type="button" onClick={onClose}>

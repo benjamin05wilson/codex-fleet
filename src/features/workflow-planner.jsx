@@ -22,6 +22,8 @@ export function WorkflowPlanner({
     [title, setTitle] = useState(""),
     [objective, setObjective] = useState(""),
     [tasks, setTasks] = useState(() => fromTemplate(templates[0]));
+  const [sandbox, setSandbox] = useState("");
+  const [yoloApproved, setYoloApproved] = useState(false);
   const workflows = (state.workflows || []).filter(
     (w) => w.projectId === project.id,
   );
@@ -66,7 +68,7 @@ export function WorkflowPlanner({
           <p>{w.objective}</p>
           <p className="muted-copy">
             {w.reason ||
-              `Approved limits: ${w.limits.concurrency} parallel · ${w.limits.maxAttempts} attempts per task · ${Math.round(w.limits.timeoutMs / 60000)} minutes per attempt`}
+              `Approved limits: ${w.limits.concurrency} parallel · ${w.limits.maxAttempts} attempts per task · ${w.limits.timeoutMs ? `${Math.round(w.limits.timeoutMs / 60000)} minutes per attempt` : "no automatic timeout"}`}
           </p>
           <ol>
             {w.tasks.map((t, i) => (
@@ -113,6 +115,7 @@ export function WorkflowPlanner({
                   templateId,
                   title,
                   objective,
+                  ...(sandbox ? { sandbox, yoloApproved } : {}),
                   tasks: tasks.map((t, i) => ({
                     ...t,
                     scopes: t.scopes
@@ -142,6 +145,31 @@ export function WorkflowPlanner({
                     </option>
                   ))}
                 </select>
+              </Field>
+              <Field label="Permissions">
+                <select
+                  value={sandbox}
+                  onChange={(e) => {
+                    setSandbox(e.target.value);
+                    setYoloApproved(false);
+                  }}
+                >
+                  <option value="">Template default</option>
+                  <option value="read-only">Read only</option>
+                  <option value="workspace-write">Standard</option>
+                  <option value="danger-full-access">YOLO</option>
+                </select>
+                {sandbox === "danger-full-access" && (
+                  <label>
+                    <input
+                      type="checkbox"
+                      required
+                      checked={yoloApproved}
+                      onChange={(e) => setYoloApproved(e.target.checked)}
+                    />
+                    Allow full access for this workflow
+                  </label>
+                )}
               </Field>
               <Field label="Plan title">
                 <input

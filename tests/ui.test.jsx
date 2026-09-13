@@ -4189,3 +4189,32 @@ test("chat sends a follow-up while its worktree shell remains open", async () =>
     fetchMock.mock.calls.some(([url]) => url.includes("/terminal/close")),
   ).toBe(false);
 });
+
+test("chat approval controls submit the selected decision to the current run", async () => {
+  const { fetchMock, user } = await renderSlashChat("running", {
+    pendingApprovals: [
+      {
+        requestId: "approval-fixture",
+        method: "item/commandExecution/requestApproval",
+        params: { command: "echo fixture", reason: "Needs permission" },
+      },
+    ],
+  });
+  await user.click(
+    await screen.findByRole("button", { name: "Approve", exact: true }),
+  );
+  let call = fetchMock.mock.calls.find(
+    ([url]) => url === "/api/runs/slash-chat/approval",
+  );
+  expect(call[1].method).toBe("POST");
+  expect(JSON.parse(call[1].body)).toEqual({
+    requestId: "approval-fixture",
+    approved: true,
+  });
+  fetchMock.mockClear();
+  await user.click(screen.getByRole("button", { name: "Deny", exact: true }));
+  call = fetchMock.mock.calls.find(
+    ([url]) => url === "/api/runs/slash-chat/approval",
+  );
+  expect(JSON.parse(call[1].body).approved).toBe(false);
+});

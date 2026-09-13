@@ -186,12 +186,11 @@ test("native view uses a fresh protected session and exposes no preload or agent
     disableDialogs: true,
     spellcheck: false,
   });
-  let permission;
-  p.permission(null, "media", (v) => (permission = v));
-  assert.equal(permission, false);
-  assert.equal(p.permissionCheck(), false);
+  assert.equal(p.permission, undefined);
+  assert.equal(p.permissionCheck, undefined);
   assert.equal(web.rtc, "disable_non_proxied_udp");
-  assert.deepEqual(web.popup(), { action: "deny" });
+  assert.equal(web.popup({ url: "https://example.com" }).action, "allow");
+  assert.equal(web.popup({ url: "http://127.0.0.1:4317" }).action, "deny");
   for (const url of [
     "file:///etc/passwd",
     "http://127.0.0.1:4317/api/state",
@@ -211,7 +210,7 @@ test("native view uses a fresh protected session and exposes no preload or agent
       download = true;
     },
   });
-  assert.ok(download);
+  assert.equal(download, false);
   let nav = false;
   web.emit("will-frame-navigate", {
     url: "file:///etc/passwd",

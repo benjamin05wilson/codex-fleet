@@ -19,7 +19,12 @@ if (process.argv.includes("app-server")) {
   createInterface({ input: process.stdin }).on("line", async (line) => {
     const request = JSON.parse(line),
       reply = (result) => send({ id: request.id, result });
-    if (request.method === "initialize") reply({ userAgent: "fixture" });
+    if (request.id === "fixture-approval" && request.result) {
+      await writeFile("approval-result.json", JSON.stringify(request.result));
+      notify("turn/completed", {
+        turn: { id: "fixture-turn", status: "completed" },
+      });
+    } else if (request.method === "initialize") reply({ userAgent: "fixture" });
     else if (request.method === "account/read")
       reply({
         account: { type: "apiKey", secret: "must-not-be-exposed" },
@@ -87,6 +92,20 @@ if (process.argv.includes("app-server")) {
             },
           }),
         );
+      if (prompt.includes("TEST_APPROVAL")) {
+        send({
+          id: "fixture-approval",
+          method: "item/commandExecution/requestApproval",
+          params: {
+            threadId: "fixture-thread",
+            turnId: "fixture-turn",
+            itemId: "fixture-command",
+            command: "echo permission-fixture",
+            reason: "Fixture permission request",
+          },
+        });
+        return;
+      }
       if (prompt.includes("TEST_HANG")) return;
       if (prompt.includes("TEST_DELAY"))
         await new Promise((r) => setTimeout(r, 1500));

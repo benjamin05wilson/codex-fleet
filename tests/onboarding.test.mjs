@@ -213,7 +213,7 @@ test("global defaults apply to new chats only, respect project overrides, and ne
   assert.equal(scratch.worktree, undefined);
   assert.ok(app.store.list("run").every((r) => r.attempt === 0));
 });
-test("YOLO requires explicit approval and is excluded from managed tasks and team settings", async (t) => {
+test("YOLO requires explicit approval and works in managed tasks and team settings", async (t) => {
   const { app } = await fixture(t);
   assert.throws(
     () =>
@@ -235,16 +235,14 @@ test("YOLO requires explicit approval and is excluded from managed tasks and tea
     { teamRole: "developer" },
     { reviewOf: "r" },
   ]) {
-    assert.throws(
-      () =>
-        app.engine.create(run.projectId, {
-          title: "managed",
-          prompt: "test",
-          sandbox: "danger-full-access",
-          yoloApproved: true,
-          ...managed,
-        }),
-      /independent/,
+    assert.doesNotThrow(() =>
+      app.engine.create(run.projectId, {
+        title: "managed",
+        prompt: "test",
+        sandbox: "danger-full-access",
+        yoloApproved: true,
+        ...managed,
+      }),
     );
   }
   app.store.patch("run", run.id, {
@@ -253,16 +251,14 @@ test("YOLO requires explicit approval and is excluded from managed tasks and tea
     teamId: "t",
     teamRole: "developer",
   });
-  assert.throws(
-    () =>
-      updateSessionOptions(app, run.id, {
-        approved: true,
-        sandbox: "danger-full-access",
-        yoloApproved: true,
-      }),
-    /independent/,
+  assert.doesNotThrow(() =>
+    updateSessionOptions(app, run.id, {
+      approved: true,
+      sandbox: "danger-full-access",
+      yoloApproved: true,
+    }),
   );
-  assert.equal(app.store.get("run", run.id).sandbox, "read-only");
+  assert.equal(app.store.get("run", run.id).sandbox, "danger-full-access");
 });
 test("YOLO messages can queue alongside unrelated agents, shells and previews in either permission mode", async (t) => {
   const { app, root } = await fixture(t);
@@ -392,12 +388,18 @@ test("worker aligns prompt permissions and sandbox on new, resumed and permissio
       await readFile(join(ready.worktree, "policy.json"), "utf8"),
     );
     assert.equal(policy.thread.sandbox, sandbox);
-    assert.equal(policy.thread.approvalPolicy, "never");
+    assert.equal(
+      policy.thread.approvalPolicy,
+      sandbox === "danger-full-access" ? "never" : "on-request",
+    );
     assert.deepEqual(
       policy.turn.sandboxPolicy,
       sandboxPolicy(ready.worktree, sandbox),
     );
-    assert.equal(policy.turn.approvalPolicy, "never");
+    assert.equal(
+      policy.turn.approvalPolicy,
+      sandbox === "danger-full-access" ? "never" : "on-request",
+    );
     assert.match(
       policy.prompt,
       /supersedes earlier Fleet-generated permission instructions/,
@@ -405,21 +407,58 @@ test("worker aligns prompt permissions and sandbox on new, resumed and permissio
     if (sandbox === "danger-full-access") {
       assert.match(
         policy.prompt,
-        /install software and modify files outside this working folder when needed for the user's authorized task/,
+        /working folder is a starting location, not an access boundary/,
       );
       assert.doesNotMatch(
         policy.prompt,
         /Do not read credentials or modify files outside this working folder/,
       );
-      assert.match(policy.prompt, /unless the user explicitly requests it/);
-    } else {
       assert.match(
         policy.prompt,
-        /Do not read credentials or modify files outside this working folder/,
+        /authorized commits, pushes, deployments and credential use/,
       );
+    } else {
+      assert.match(policy.prompt, /request it through the approval flow/);
       assert.doesNotMatch(policy.prompt, /YOLO full access is enabled/);
       if (sandbox === "read-only")
-        assert.match(policy.prompt, /do not modify files or install software/);
+        assert.match(policy.prompt, /configured read-only sandbox/);
     }
+  }
+});
+
+test("worker permission requests can be approved or denied in the current turn", async (t) => {
+  const { app } = await fixture(t);
+  const run = await quickSession(app, {
+    approved: true,
+    sandbox: "workspace-write",
+  });
+  const until = async (fn) => {
+    const deadline = Date.now() + 15000;
+    while (!fn() && Date.now() < deadline) await delay(40);
+    assert.ok(fn(), "Expected worker state");
+  };
+  for (const approved of [true, false]) {
+    app.engine.queue(run.id, "TEST_APPROVAL");
+    await until(
+      () => app.store.get("run", run.id).pendingApprovals?.length === 1,
+    );
+    const request = app.store.get("run", run.id).pendingApprovals[0];
+    await assert.rejects(
+      app.engine.answerApproval(run.id, { requestId: "stale", approved }),
+      /no longer active/,
+    );
+    await app.engine.answerApproval(run.id, {
+      requestId: request.requestId,
+      approved,
+    });
+    await until(() => app.store.get("run", run.id).status === "review");
+    const current = app.store.get("run", run.id);
+    assert.deepEqual(current.pendingApprovals, []);
+    assert.deepEqual(
+      JSON.parse(
+        await readFile(join(current.worktree, "approval-result.json"), "utf8"),
+      ),
+      { decision: approved ? "accept" : "decline" },
+    );
   }
 });

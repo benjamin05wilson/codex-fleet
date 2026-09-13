@@ -319,6 +319,29 @@ test("an old idle chat gains brain tools on its next turn, then retains them acr
   );
   assert.equal(connections, 1);
 });
+test("idle workers from older Fleet versions upgrade on the next turn", async (t) => {
+  const w = await setup(t),
+    engine = w.createEngine();
+  const run = engine.create(w.project.id, {
+    title: "Upgrade",
+    prompt: "TEST_POLICY",
+    sandbox: "workspace-write",
+  });
+  engine.queue(run.id);
+  await until(() => w.store.get("run", run.id).status === "review");
+  const old = w.store.get("run", run.id).worker;
+  w.store.patch("run", run.id, { worker: { ...old, runtimeVersion: 1 } });
+  engine.queue(run.id, "TEST_POLICY next turn");
+  await until(
+    () =>
+      w.store.get("run", run.id).status === "review" &&
+      w.store.get("run", run.id).attempt === 2,
+  );
+  const next = w.store.get("run", run.id).worker;
+  assert.notEqual(next.identity, old.identity);
+  assert.equal(next.runtimeVersion, 2);
+});
+
 test("worker retries one pre-initialization app-server exit without replaying a turn", async (t) => {
   const w = await setup(t),
     engine = w.createEngine();

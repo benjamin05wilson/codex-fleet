@@ -62,7 +62,7 @@ async function fixture(t) {
   });
   return { app, calls, base: `http://127.0.0.1:${app.server.address().port}` };
 }
-test("browser URL policy blocks unsafe schemes, credentials, internal ports and private DNS", async () => {
+test("browser URL policy blocks unsafe schemes, credentials, internal ports and internal DNS aliases while permitting private hosts", async () => {
   for (const value of [
     "file:///etc/passwd",
     "javascript:alert(1)",
@@ -87,18 +87,24 @@ test("browser URL policy blocks unsafe schemes, credentials, internal ports and 
   ])
     assert.equal(publicAddress(ip), false, ip);
   assert.equal(publicAddress("1.1.1.1"), true);
-  await assert.rejects(
-    browserDestination(
+  for (const address of ["127.0.0.1", "10.0.0.1", "100.64.0.1", "fd00::1"]) {
+    const result = await browserDestination(
       "https://example.test",
-      ["https://example.test"],
       [],
-      async () => [{ address: "127.0.0.1", family: 4 }],
-    ),
-    /Private/,
-  );
+      [],
+      async () => [{ address, family: address.includes(":") ? 6 : 4 }],
+    );
+    assert.equal(result.address, address);
+  }
   await assert.rejects(
-    browserDestination("http://localhost:3001", ["http://localhost:3000"], []),
-    /selected local preview/,
+    browserDestination("http://alias.test:4317", [], [4317], async () => [
+      { address: "127.0.0.1", family: 4 },
+    ]),
+    /internal/,
+  );
+  assert.equal(
+    (await browserDestination("http://localhost:3001", [], [])).port,
+    3001,
   );
   const pinned = await browserDestination(
     "https://other.test/path",
@@ -718,13 +724,15 @@ test("typing and scrolling avoid redundant native URL lookups", async (t) => {
     ["scroll", "down", "400"],
   ]);
 });
-test("browser routing shares native access automatically and missing tools fail closed", async () => {
+test("browser routing shares native access automatically and allows other available tools", async () => {
   assert.match(browserTool.description, /same native project browser/);
   assert.match(browserTool.description, /navigate directly/);
-  assert.match(browserInstructions(false), /This chat has no browser tool/);
-  assert.match(browserInstructions(true), /never fall back/);
-  assert.match(browserInstructions(true), /do not retry the same click/);
-  assert.match(browserInstructions(true), /URL and network policy/);
+  assert.match(browserInstructions(false), /available browser/);
+  assert.match(
+    browserInstructions(true),
+    /Other available browser and desktop tools/,
+  );
+  assert.doesNotMatch(browserInstructions(true), /ONLY|never fall back/);
   const requests = [];
   await verifyBrowserTool(
     {
@@ -746,9 +754,12 @@ test("browser routing shares native access automatically and missing tools fail 
   );
   assert.equal(requests[1].params.cursor, "page2");
   assert.equal(requests[0].params.threadId, "thread-a");
-  await assert.rejects(
-    verifyBrowserTool({ request: async () => ({ data: [] }) }, "thread-a"),
-    /did not connect/,
+  assert.equal(
+    await verifyBrowserTool(
+      { request: async () => ({ data: [] }) },
+      "thread-a",
+    ),
+    false,
   );
 });
 test("MCP connection override carries only the dedicated scoped adapter, without experimental tools", () => {
@@ -764,7 +775,7 @@ test("MCP connection override carries only the dedicated scoped adapter, without
     "capability",
   );
   assert.equal(result.dynamicTools, undefined);
-  assert.equal(result.config["mcp_servers.fleet_browser"].required, true);
+  assert.equal(result.config["mcp_servers.fleet_browser"].required, false);
 });
 
 test("browser startup config supports resumed worker processes without putting capabilities in argv", () => {
@@ -833,9 +844,9 @@ test("worker connects the shared browser before fresh and resumed fixture turns"
     );
     assert.equal(
       policy.thread.config["mcp_servers.fleet_browser"].required,
-      true,
+      false,
     );
-    assert.equal(policy.thread.config["mcp_servers.cua_repl"].enabled, false);
+    assert.equal(policy.thread.config["mcp_servers.cua_repl"], undefined);
     assert.match(policy.thread.developerInstructions, /automatically shared/);
     assert.equal(
       policy.thread.config["mcp_servers.fleet_browser"]
