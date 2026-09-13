@@ -84,10 +84,8 @@ export function pageOperation(input) {
   const el = target.el;
   if (el.disabled || el.getAttribute("aria-disabled") === "true")
     throw new Error("Element is disabled.");
-  if (el instanceof HTMLInputElement && ["file", "password"].includes(el.type))
-    throw new Error(
-      "Enter passwords and select files yourself in the native browser.",
-    );
+  if (el instanceof HTMLInputElement && el.type === "file")
+    throw new Error("Select files yourself in the native browser.");
   el.scrollIntoView({
     block: "center",
     inline: "nearest",

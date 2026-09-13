@@ -124,3 +124,82 @@ test("native snapshot filtering does not replace navigate URL enforcement", asyn
     /internal services/,
   );
 });
+
+test("password fields can be filled for sign-in without returning their value; file pickers stay manual", (t) => {
+  const dom = new JSDOM(
+    '<label for="password">Password</label><input id="password" type="password"><input type="file" aria-label="Upload">',
+    { url: "https://login.example/", pretendToBeVisual: true },
+  );
+  for (const key of [
+    "window",
+    "document",
+    "location",
+    "HTMLInputElement",
+    "HTMLTextAreaElement",
+    "HTMLSelectElement",
+    "Event",
+    "getComputedStyle",
+  ]) {
+    const original = Object.getOwnPropertyDescriptor(globalThis, key);
+    Object.defineProperty(globalThis, key, {
+      configurable: true,
+      value:
+        key === "window"
+          ? dom.window
+          : key === "getComputedStyle"
+            ? dom.window.getComputedStyle.bind(dom.window)
+            : dom.window[key],
+    });
+    t.after(() =>
+      original
+        ? Object.defineProperty(globalThis, key, original)
+        : delete globalThis[key],
+    );
+  }
+  t.after(() => dom.window.close());
+  const password = dom.window.document.querySelector("#password");
+  for (const el of dom.window.document.querySelectorAll("input")) {
+    el.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      width: 100,
+      height: 20,
+    });
+    el.scrollIntoView = () => {};
+  }
+  dom.window.document.elementFromPoint = () => password;
+  const snapshot = pageOperation({
+    action: "snapshot",
+    nonce: "login",
+    generation: 0,
+  });
+  const target = snapshot.elements[0].split(" ")[0];
+  const events = [];
+  password.addEventListener("input", () => events.push("input"));
+  password.addEventListener("change", () => events.push("change"));
+  const result = pageOperation({
+    action: "fill",
+    target,
+    text: "fixture-password-only",
+    generation: 0,
+  });
+  assert.equal(password.value, "fixture-password-only");
+  assert.deepEqual(result, { filled: target });
+  assert.deepEqual(events, ["input", "change"]);
+  assert.equal(
+    JSON.stringify(
+      pageOperation({ action: "snapshot", nonce: "after", generation: 0 }),
+    ).includes("fixture-password-only"),
+    false,
+  );
+  assert.throws(
+    () =>
+      pageOperation({
+        action: "fill",
+        target: "@eafter2",
+        text: "/tmp/file",
+        generation: 0,
+      }),
+    /Select files yourself/,
+  );
+});
